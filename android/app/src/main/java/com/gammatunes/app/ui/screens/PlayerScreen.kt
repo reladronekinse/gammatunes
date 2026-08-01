@@ -18,7 +18,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -119,6 +122,47 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(20.dp))
 
+            run {
+                var dragPositionMs by remember { mutableStateOf<Float?>(null) }
+                val durationMs = player.durationMs
+                val sliderMax = if (durationMs > 0) durationMs.toFloat() else 1f
+                val displayedPositionMs = (dragPositionMs ?: player.currentPositionMs.toFloat())
+                    .coerceIn(0f, sliderMax)
+
+                Column(modifier = Modifier.fillMaxWidth(0.85f)) {
+                    Slider(
+                        value = displayedPositionMs,
+                        onValueChange = {
+                            player.isSeeking = true
+                            dragPositionMs = it
+                        },
+                        onValueChangeFinished = {
+                            dragPositionMs?.let { player.seekTo(it.toLong()) }
+                            dragPositionMs = null
+                            player.isSeeking = false
+                        },
+                        valueRange = 0f..sliderMax,
+                        enabled = durationMs > 0,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = formatDuration(displayedPositionMs.toLong()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = formatDuration(durationMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(0.75f),
@@ -221,6 +265,18 @@ fun PlayerScreen(
                 Text("${strings.errorPrefix}$it", color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
     }
 }
 

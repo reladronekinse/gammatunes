@@ -53,6 +53,17 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
     var repeatMode by mutableStateOf(RepeatMode.OFF)
         private set
 
+    var currentPositionMs by mutableStateOf(0L)
+        private set
+    var durationMs by mutableStateOf(0L)
+        private set
+    var isSeeking by mutableStateOf(false)
+
+    fun seekTo(positionMs: Long) {
+        boundPlayer?.seekTo(positionMs)
+        currentPositionMs = positionMs
+    }
+
     fun cycleRepeatMode() {
         repeatMode = when (repeatMode) {
             RepeatMode.OFF -> RepeatMode.ALL
@@ -77,6 +88,20 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
             hasPrevious = { hasPrevious },
         )
         connectMediaSession()
+        startPositionPolling()
+    }
+
+    private fun startPositionPolling() {
+        scope.launch {
+            while (true) {
+                delay(500)
+                val player = boundPlayer ?: continue
+                if (isSeeking) continue
+                currentPositionMs = player.currentPosition.coerceAtLeast(0L)
+                val d = player.duration
+                durationMs = if (d != androidx.media3.common.C.TIME_UNSET && d > 0) d else 0L
+            }
+        }
     }
 
     private fun connectMediaSession() {
@@ -193,6 +218,8 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         }
         currentTrack = track
         streamError = null
+        currentPositionMs = resumePositionMs
+        durationMs = 0L
 
         val offlineTrack = OfflineRepository.localTrack(track.videoId)
         if (offlineTrack != null) {
