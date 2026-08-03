@@ -2,8 +2,9 @@ package com.gammatunes.app.ui.components
 
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -17,10 +18,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gammatunes.app.model.Track
 import com.gammatunes.app.offline.OfflineRepository
-import kotlinx.coroutines.launch
 import com.gammatunes.app.ui.i18n.LocalStrings
+import kotlinx.coroutines.launch
 
-
+/**
+ * Скачать / удалить оффлайн-копию.
+ * Важно: в состоянии «скачано» показывается иконка корзины (Delete),
+ * а не DownloadDone — иначе кажется, что тап «открывает», а на деле удаляет.
+ */
 @Composable
 fun DownloadButton(track: Track, modifier: Modifier = Modifier) {
     val strings = LocalStrings.current
@@ -37,10 +42,10 @@ fun DownloadButton(track: Track, modifier: Modifier = Modifier) {
         modifier = modifier,
         onClick = {
             scope.launch {
-                if (isDownloaded) {
-                    OfflineRepository.delete(track.videoId)
-                } else if (!isDownloading) {
-                    OfflineRepository.download(track)
+                when {
+                    isDownloading -> Unit
+                    isDownloaded -> OfflineRepository.delete(track.videoId)
+                    else -> OfflineRepository.download(track)
                 }
             }
         },
@@ -51,16 +56,20 @@ fun DownloadButton(track: Track, modifier: Modifier = Modifier) {
                 strokeWidth = 2.dp,
             )
             isDownloaded -> Icon(
-                imageVector = Icons.Default.DownloadDone,
+                imageVector = Icons.Default.Delete,
                 contentDescription = strings.downloaded,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            hasError -> Icon(
+                imageVector = Icons.Default.ErrorOutline,
+                contentDescription = errors[track.videoId] ?: strings.download,
+                tint = MaterialTheme.colorScheme.error,
             )
             else -> Icon(
                 imageVector = Icons.Default.Download,
-                contentDescription = if (hasError) strings.downloadError else strings.download,
-                tint = if (hasError) MaterialTheme.colorScheme.error else LocalContentColor.current,
+                contentDescription = strings.download,
+                tint = LocalContentColor.current,
             )
         }
     }
 }
-

@@ -1,8 +1,10 @@
 package com.gammatunes.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
@@ -15,9 +17,21 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -26,25 +40,41 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.gammatunes.app.auth.AuthRepository
 import com.gammatunes.app.player.PlayerState
 import com.gammatunes.app.player.RepeatMode
 import com.gammatunes.app.ui.components.DownloadButton
 import com.gammatunes.app.ui.components.LiquidGlassSurface
-import kotlinx.coroutines.launch
 import com.gammatunes.app.ui.i18n.LocalStrings
+import com.gammatunes.app.ui.settings.BackgroundStyle
+import com.gammatunes.app.ui.settings.CoverStyle
+import com.gammatunes.app.ui.settings.SeekBarStyle
+import com.gammatunes.app.ui.settings.UiSettingsRepository
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-
+/**
+ * Экран-вкладка "Плеер".
+ * Название — одна строка, шрифт уменьшается пока весь текст не влезет (без «...»).
+ * Есть seek bar с текущей позицией и длительностью.
+ */
 @Composable
 fun PlayerScreen(
     player: PlayerState,
     onArtistClick: (artistId: String) -> Unit = {},
+    onAlbumClick: (albumId: String) -> Unit = {},
 ) {
     val strings = LocalStrings.current
     val track = player.currentTrack
+    val ui by UiSettingsRepository.settings.collectAsState()
     val scope = rememberCoroutineScope()
 
     if (track == null) {
@@ -52,21 +82,62 @@ fun PlayerScreen(
         return
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // --- Seek bar state ---
+    var positionMs by remember(track.videoId) { mutableLongStateOf(0L) }
+    var durationMs by remember(track.videoId) { mutableLongStateOf(0L) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var seekFraction by remember { mutableFloatStateOf(0f) }
 
-        AsyncImage(
-            model = track.thumbnail,
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxSize()
-                .blur(60.dp),
-            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.35f)),
-        )
+    LaunchedEffect(track.videoId, player.isPlaying) {
+        while (true) {
+            if (!isSeeking) {
+                positionMs = player.positionMs
+                durationMs = player.durationMs
+            }
+            delay(250)
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (ui.backgroundStyle) {
+            BackgroundStyle.BLUR_ART -> {
+                AsyncImage(
+                    model = track.thumbnail,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(60.dp),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.35f)),
+                )
+            }
+            BackgroundStyle.SOLID_DARK -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background),
+                )
+            }
+            BackgroundStyle.GRADIENT -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                    MaterialTheme.colorScheme.background,
+                                    MaterialTheme.colorScheme.background,
+                                ),
+                            ),
+                        ),
+                )
+            }
+        }
 
         Column(
             modifier = Modifier
@@ -76,34 +147,52 @@ fun PlayerScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
+            val coverShape = when (ui.coverStyle) {
+                CoverStyle.SQUARE -> RoundedCornerShape(4.dp)
+                CoverStyle.ROUNDED -> RoundedCornerShape(28.dp)
+                CoverStyle.CIRCLE -> CircleShape
+            }
             AsyncImage(
                 model = track.thumbnail,
                 contentDescription = track.title,
                 modifier = Modifier
                     .fillMaxWidth(0.75f)
                     .aspectRatio(1f)
-                    .clip(RoundedCornerShape(28.dp)),
+                    .clip(coverShape),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
 
             Spacer(Modifier.height(24.dp))
 
-            Text(
+            val canOpenAlbum = !track.albumId.isNullOrBlank()
+            AutoSizeSingleLineText(
                 text = track.title,
                 style = MaterialTheme.typography.titleLarge,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                color = Color.White,
+                maxFontSize = 22.sp,
+                minFontSize = 11.sp,
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .then(
+                        if (canOpenAlbum) {
+                            Modifier.clickable { onAlbumClick(track.albumId!!) }
+                        } else {
+                            Modifier
+                        },
+                    ),
             )
             Text(
                 text = track.artist,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.clickable {
                     val id = track.artistId
                     if (!id.isNullOrBlank()) {
                         onArtistClick(id)
                     } else {
-
                         scope.launch {
                             try {
                                 val found = com.gammatunes.app.network.ApiClient.api
@@ -120,49 +209,91 @@ fun PlayerScreen(
                 },
             )
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
-            run {
-                var dragPositionMs by remember { mutableStateOf<Float?>(null) }
-                val durationMs = player.durationMs
-                val sliderMax = if (durationMs > 0) durationMs.toFloat() else 1f
-                val displayedPositionMs = (dragPositionMs ?: player.currentPositionMs.toFloat())
-                    .coerceIn(0f, sliderMax)
-
-                Column(modifier = Modifier.fillMaxWidth(0.85f)) {
-                    Slider(
-                        value = displayedPositionMs,
-                        onValueChange = {
-                            player.isSeeking = true
-                            dragPositionMs = it
-                        },
-                        onValueChangeFinished = {
-                            dragPositionMs?.let { player.seekTo(it.toLong()) }
-                            dragPositionMs = null
-                            player.isSeeking = false
-                        },
-                        valueRange = 0f..sliderMax,
-                        enabled = durationMs > 0,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = formatDuration(displayedPositionMs.toLong()),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // ----- Seek bar -----
+            val safeDuration = durationMs.coerceAtLeast(1L)
+            val sliderValue = if (isSeeking) {
+                seekFraction
+            } else {
+                (positionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+            }
+            Column(modifier = Modifier.fillMaxWidth(0.9f)) {
+                val displayPos = if (isSeeking) {
+                    (seekFraction * safeDuration).toLong()
+                } else {
+                    positionMs
+                }
+                val enabled = durationMs > 0 && !player.isLoadingStream
+                when (ui.seekBarStyle) {
+                    SeekBarStyle.DEFAULT -> {
+                        Slider(
+                            value = sliderValue,
+                            onValueChange = { v ->
+                                isSeeking = true
+                                seekFraction = v
+                            },
+                            onValueChangeFinished = {
+                                val target = (seekFraction * safeDuration).toLong()
+                                player.seekTo(target)
+                                positionMs = target
+                                isSeeking = false
+                            },
+                            enabled = enabled,
                         )
-                        Text(
-                            text = formatDuration(durationMs),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    }
+                    SeekBarStyle.THIN -> {
+                        Slider(
+                            value = sliderValue,
+                            onValueChange = { v ->
+                                isSeeking = true
+                                seekFraction = v
+                            },
+                            onValueChangeFinished = {
+                                val target = (seekFraction * safeDuration).toLong()
+                                player.seekTo(target)
+                                positionMs = target
+                                isSeeking = false
+                            },
+                            enabled = enabled,
+                            modifier = Modifier.height(24.dp),
+                        )
+                    }
+                    SeekBarStyle.WAVE -> {
+                        WaveSeekBar(
+                            progress = sliderValue,
+                            enabled = enabled,
+                            onProgressChange = { v ->
+                                isSeeking = true
+                                seekFraction = v
+                            },
+                            onProgressChangeFinished = {
+                                val target = (seekFraction * safeDuration).toLong()
+                                player.seekTo(target)
+                                positionMs = target
+                                isSeeking = false
+                            },
                         )
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = formatTime(displayPos),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.8f),
+                    )
+                    Text(
+                        text = formatTime(durationMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.8f),
+                    )
+                }
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(0.75f),
@@ -195,11 +326,11 @@ fun PlayerScreen(
                     val isLoggedIn by AuthRepository.isLoggedIn.collectAsState()
                     val liked by AuthRepository.likedTracks.collectAsState()
                     val isLiked = liked.any { it.videoId == track.videoId }
-                    val scope = rememberCoroutineScope()
+                    val likeScope = rememberCoroutineScope()
                     IconButton(
                         onClick = {
                             if (!isLoggedIn) return@IconButton
-                            scope.launch {
+                            likeScope.launch {
                                 if (isLiked) {
                                     AuthRepository.unlikeTrack(track.videoId)
                                     AuthRepository.refreshLiked()
@@ -268,16 +399,104 @@ fun PlayerScreen(
     }
 }
 
-private fun formatDuration(ms: Long): String {
-    val totalSeconds = (ms / 1000).coerceAtLeast(0)
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val seconds = totalSeconds % 60
-    return if (hours > 0) {
-        "%d:%02d:%02d".format(hours, minutes, seconds)
-    } else {
-        "%d:%02d".format(minutes, seconds)
+
+@Composable
+private fun WaveSeekBar(
+    progress: Float,
+    enabled: Boolean,
+    onProgressChange: (Float) -> Unit,
+    onProgressChangeFinished: () -> Unit,
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val track = Color.White.copy(alpha = 0.25f)
+    var widthPx by remember { mutableStateOf(1f) }
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(enabled, widthPx) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    onProgressChange((offset.x / widthPx).coerceIn(0f, 1f))
+                    onProgressChangeFinished()
+                }
+            }
+            .pointerInput(enabled, widthPx) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragEnd = { onProgressChangeFinished() },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        onProgressChange((change.position.x / widthPx).coerceIn(0f, 1f))
+                    },
+                )
+            },
+    ) {
+        val bars = 32
+        val barWidth = size.width / (bars * 1.8f)
+        val gap = barWidth * 0.8f
+        for (i in 0 until bars) {
+            val x = i * (barWidth + gap) + gap
+            val mid = bars / 2f
+            val amp = 0.35f + 0.65f * (1f - kotlin.math.abs(i - mid) / mid)
+            val h = size.height * amp * (0.55f + 0.45f * kotlin.math.sin(i * 0.9f).toFloat().let { (it + 1f) / 2f })
+            val active = i / bars.toFloat() <= progress
+            drawRoundRect(
+                color = if (active) primary else track,
+                topLeft = Offset(x, (size.height - h) / 2f),
+                size = androidx.compose.ui.geometry.Size(barWidth, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f, barWidth / 2f),
+            )
+        }
     }
+}
+
+private fun formatTime(ms: Long): String {
+    if (ms <= 0L) return "0:00"
+    val totalSec = (ms / 1000L).toInt()
+    val m = totalSec / 60
+    val s = totalSec % 60
+    return "%d:%02d".format(m, s)
+}
+
+/**
+ * Одна строка, без троеточия: шрифт уменьшается, пока текст не влезет целиком.
+ */
+@Composable
+fun AutoSizeSingleLineText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    maxFontSize: TextUnit,
+    minFontSize: TextUnit,
+    modifier: Modifier = Modifier,
+) {
+    var fontSize by remember(text, maxFontSize) { mutableStateOf(maxFontSize) }
+
+    // При смене текста начинаем снова с максимального размера.
+    LaunchedEffect(text) {
+        fontSize = maxFontSize
+    }
+
+    Text(
+        text = text,
+        color = color,
+        style = style,
+        fontSize = fontSize,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip, // не Ellipsis — режем визуально, пока шрифт не уменьшится
+        textAlign = TextAlign.Center,
+        modifier = modifier,
+        onTextLayout = { result ->
+            if (result.hasVisualOverflow && fontSize.value > minFontSize.value + 0.4f) {
+                val next = (fontSize.value - 1f).coerceAtLeast(minFontSize.value)
+                fontSize = next.sp
+            }
+        },
+    )
 }
 
 @Composable
@@ -308,4 +527,3 @@ private fun EmptyPlayerPlaceholder() {
         }
     }
 }
-

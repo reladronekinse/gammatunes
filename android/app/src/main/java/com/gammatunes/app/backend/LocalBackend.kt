@@ -15,7 +15,12 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.Proxy
 
-
+/**
+ * Поднимает бэкенд (backend_server.py) прямо на устройстве через Chaquopy,
+ * вместо того чтобы требовать отдельный ПК в той же Wi-Fi сети.
+ *
+ * Сервер слушает только 127.0.0.1 — наружу из телефона ничего не торчит.
+ */
 object LocalBackend {
 
     const val PORT = 8765
@@ -24,28 +29,35 @@ object LocalBackend {
     private const val TAG = "LocalBackend"
     private val started = AtomicBoolean(false)
 
-
+    /** Если фоновый поток с сервером упал — здесь будет текст причины (для показа в UI). */
     @Volatile
     var lastError: String? = null
         private set
 
-
+    /** true, пока поток с сервером жив и не упал с исключением. */
     @Volatile
     private var crashed = false
 
-
+    /**
+     * Живой статус запуска — можно показать в UI без adb, чтобы видеть, на
+     * каком именно шаге всё встало.
+     */
     private val _status = MutableStateFlow("Ожидание запуска…")
     val status: StateFlow<String> = _status
 
     private val healthCheckClient = OkHttpClient.Builder()
         .connectTimeout(2, TimeUnit.SECONDS)
         .readTimeout(2, TimeUnit.SECONDS)
-
-
+        // Тот же обход системного прокси/VPN, что и в ApiClient — иначе
+        // health-check к localhost может зависать/падать при включённом VPN.
         .proxy(Proxy.NO_PROXY)
         .build()
 
-
+    /**
+     * Запускает Python-интерпретатор (если ещё не запущен) и сам HTTP-сервер
+     * в отдельном фоновом потоке-демоне. Безопасно вызывать несколько раз —
+     * реально стартует только один раз за жизнь процесса.
+     */
     fun start(context: Context) {
         if (!started.compareAndSet(false, true)) return
 
@@ -57,7 +69,9 @@ object LocalBackend {
                     Python.start(AndroidPlatform(context.applicationContext))
                 }
 
-
+                // Импортируем тяжёлые пакеты по отдельности, а не одним модулем
+                // backend_server — так видно (в статусе и в logcat), какой именно
+                // импорт долго думает или падает, если что-то пойдёт не так.
                 val py = Python.getInstance()
 
                 _status.value = "Импортирую ytmusicapi…"
@@ -74,7 +88,7 @@ object LocalBackend {
 
                 _status.value = "Поднимаю HTTP-сервер на порту $PORT…"
                 Log.i(TAG, _status.value)
-
+                // serve_forever() внутри — поток блокируется здесь на всё время жизни приложения.
                 module.callAttr("start", PORT)
             } catch (t: Throwable) {
                 crashed = true
@@ -88,7 +102,11 @@ object LocalBackend {
         }
     }
 
-
+    /**
+     * Ждёт, пока встроенный бэкенд начнёт отвечать на /health, но не дольше
+     * [timeoutMs]. Если фоновый поток уже упал с исключением, выходим сразу,
+     * не дожидаясь таймаута.
+     */
     suspend fun awaitReady(timeoutMs: Long = 30_000, pollEveryMs: Long = 500): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -99,7 +117,12 @@ object LocalBackend {
         return isHealthy()
     }
 
-
+    /**
+     * ВАЖНО: сетевой вызов обязательно на Dispatchers.IO — иначе на главном
+     * потоке Android кидает NetworkOnMainThreadException, которое здесь же
+     * тихо ловится как обычный Exception и всегда даёт "не готово", вне
+     * зависимости от того, поднялся сервер или нет.
+     */
     private suspend fun isHealthy(): Boolean = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url("${BASE_URL}health").build()
@@ -109,4 +132,3 @@ object LocalBackend {
         }
     }
 }
-

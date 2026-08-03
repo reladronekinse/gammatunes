@@ -12,20 +12,32 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.gammatunes.app.ui.settings.UiSettingsRepository
 
+data class GlassTokens(
+    val tint: Color,
+    val border: Color,
+)
 
-private val DarkColors = darkColorScheme(
-    primary = SeedPrimary,
-    onPrimary = SeedOnPrimary,
-    primaryContainer = SeedPrimaryContainer,
-    onPrimaryContainer = SeedOnPrimaryContainer,
+val LocalGlassTokens = staticCompositionLocalOf {
+    GlassTokens(tint = GlassTintDark, border = GlassBorderDark)
+}
+
+private fun buildDarkScheme(accent: Color) = darkColorScheme(
+    primary = accent,
+    onPrimary = Color.White,
+    primaryContainer = lerp(accent, Color.Black, 0.65f),
+    onPrimaryContainer = lerp(accent, Color.White, 0.85f),
     secondary = SeedSecondary,
     onSecondary = SeedOnSecondary,
     secondaryContainer = SeedSecondaryContainer,
@@ -43,27 +55,18 @@ private val DarkColors = darkColorScheme(
     onError = Color(0xFF690005),
 )
 
-data class GlassTokens(
-    val tint: Color,
-    val border: Color,
-)
-
-val LocalGlassTokens = staticCompositionLocalOf {
-    GlassTokens(tint = GlassTintDark, border = GlassBorderDark)
-}
-
 @Composable
 fun GammaTunesTheme(
-
     useDynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
+    val ui by UiSettingsRepository.settings.collectAsState()
 
     val colorScheme = if (useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         dynamicDarkColorScheme(context)
     } else {
-        DarkColors
+        buildDarkScheme(ui.accent.composeColor)
     }
 
     val glassTokens = GlassTokens(tint = GlassTintDark, border = GlassBorderDark)
@@ -81,8 +84,6 @@ fun GammaTunesTheme(
 
     CompositionLocalProvider(
         LocalGlassTokens provides glassTokens,
-
-
         LocalContentColor provides colorScheme.onBackground,
     ) {
         MaterialTheme(
@@ -100,4 +101,3 @@ fun GammaTunesTheme(
         )
     }
 }
-

@@ -30,10 +30,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-
+/** Режим повтора: выключен / повторять всю очередь / зациклить один трек. */
 enum class RepeatMode { OFF, ALL, ONE }
 
-
+/**
+ * UI-состояние плеера. ExoPlayer живёт в [PlaybackService].
+ * MediaController подключается к сессии — без него уведомление часто не появляется.
+ */
 @UnstableApi
 class PlayerState(private val context: Context, private val scope: CoroutineScope) {
 
@@ -53,17 +56,6 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
     var repeatMode by mutableStateOf(RepeatMode.OFF)
         private set
 
-    var currentPositionMs by mutableStateOf(0L)
-        private set
-    var durationMs by mutableStateOf(0L)
-        private set
-    var isSeeking by mutableStateOf(false)
-
-    fun seekTo(positionMs: Long) {
-        boundPlayer?.seekTo(positionMs)
-        currentPositionMs = positionMs
-    }
-
     fun cycleRepeatMode() {
         repeatMode = when (repeatMode) {
             RepeatMode.OFF -> RepeatMode.ALL
@@ -80,6 +72,21 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
     val hasPrevious: Boolean
         get() = queueIndex > 0 && queue.isNotEmpty()
 
+    /** Текущая позиция воспроизведения (мс). 0 если плеер ещё не привязан. */
+    val positionMs: Long
+        get() = boundPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L
+
+    /** Длительность текущего трека (мс). 0 если неизвестна. */
+    val durationMs: Long
+        get() {
+            val d = boundPlayer?.duration ?: 0L
+            return if (d > 0L) d else 0L
+        }
+
+    fun seekTo(positionMs: Long) {
+        boundPlayer?.seekTo(positionMs.coerceAtLeast(0L))
+    }
+
     init {
         PlayerBridge.bindControls(
             onNext = { playNext() },
@@ -88,20 +95,6 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
             hasPrevious = { hasPrevious },
         )
         connectMediaSession()
-        startPositionPolling()
-    }
-
-    private fun startPositionPolling() {
-        scope.launch {
-            while (true) {
-                delay(500)
-                val player = boundPlayer ?: continue
-                if (isSeeking) continue
-                currentPositionMs = player.currentPosition.coerceAtLeast(0L)
-                val d = player.duration
-                durationMs = if (d != androidx.media3.common.C.TIME_UNSET && d > 0) d else 0L
-            }
-        }
     }
 
     private fun connectMediaSession() {
@@ -218,8 +211,6 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         }
         currentTrack = track
         streamError = null
-        currentPositionMs = resumePositionMs
-        durationMs = 0L
 
         val offlineTrack = OfflineRepository.localTrack(track.videoId)
         if (offlineTrack != null) {
@@ -327,4 +318,3 @@ fun rememberPlayerState(): PlayerState {
     }
     return state
 }
-

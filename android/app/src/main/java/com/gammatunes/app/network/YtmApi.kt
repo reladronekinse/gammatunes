@@ -5,6 +5,8 @@ import com.gammatunes.app.model.Artist
 import com.gammatunes.app.model.ArtistSearchResponse
 import com.gammatunes.app.model.AuthLoginResponse
 import com.gammatunes.app.model.AuthStatusResponse
+import com.gammatunes.app.model.PlaylistTracksResponse
+import com.gammatunes.app.model.PlaylistsResponse
 import com.gammatunes.app.model.SearchResponse
 import com.gammatunes.app.model.SimpleOkResponse
 import com.gammatunes.app.model.StreamResponse
@@ -43,10 +45,18 @@ interface YtmApi {
     @GET("liked")
     suspend fun likedSongs(@Query("limit") limit: Int = 100): SearchResponse
 
+    @GET("playlists")
+    suspend fun libraryPlaylists(@Query("limit") limit: Int = 50): PlaylistsResponse
+
+    @GET("playlists/{playlistId}")
+    suspend fun playlistTracks(
+        @Path("playlistId") playlistId: String,
+        @Query("limit") limit: Int = 100,
+    ): PlaylistTracksResponse
+
     @POST("rate")
     suspend fun rateSongBody(@Body body: Map<String, String>): SimpleOkResponse
 }
 
 suspend fun YtmApi.rateSong(videoId: String, rating: String): SimpleOkResponse =
     rateSongBody(mapOf("videoId" to videoId, "rating" to rating))
-

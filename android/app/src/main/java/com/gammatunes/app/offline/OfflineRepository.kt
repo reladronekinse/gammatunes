@@ -6,7 +6,12 @@ import com.gammatunes.app.model.Track
 import com.gammatunes.app.network.ApiClient
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -23,7 +28,7 @@ data class OfflineTrack(
     val mimeType: String,
 )
 
-
+/** Скачанный альбом: метаданные + videoId в исходном порядке. */
 data class OfflineAlbum(
     val albumId: String,
     val title: String,
@@ -34,6 +39,10 @@ data class OfflineAlbum(
 
 object OfflineRepository {
     private const val TAG = "OfflineRepository"
+
+    /** Не зависит от UI: переключение вкладок не отменяет скачивание. */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private const val INDEX_FILE = "offline_index.json"
     private const val ALBUMS_FILE = "offline_albums.json"
     private const val MAX_DOWNLOAD_BYTES = 80L * 1024L * 1024L
@@ -43,10 +52,12 @@ object OfflineRepository {
 
     private val httpClient = OkHttpClient.Builder()
         .proxy(Proxy.NO_PROXY)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(45, TimeUnit.SECONDS)
-        .callTimeout(3, TimeUnit.MINUTES)
+        .readTimeout(3, TimeUnit.MINUTES)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(4, TimeUnit.MINUTES)
         .build()
 
     private val _index = MutableStateFlow<Map<String, OfflineTrack>>(emptyMap())
@@ -68,13 +79,48 @@ object OfflineRepository {
         appContext = context.applicationContext
         loadIndexFromDisk()
         loadAlbumsFromDisk()
+        pruneMissing()
+    }
+
+    /** Убирает из индекса записи без файла на диске (и пустые альбомы). */
+    fun pruneMissing() {
+        val before = _index.value
+        val kept = before.filterValues { offline ->
+            val f = File(offline.filePath)
+            f.exists() && f.length() >= 8 * 1024L
+        }
+        if (kept.size != before.size) {
+            _index.value = kept
+            persistIndexToDisk()
+            Log.i(TAG, "pruneMissing: ${before.size - kept.size} broken entries removed")
+        }
+        val albumsBefore = _albums.value
+        val albumsKept = albumsBefore.mapValues { (_, album) ->
+            album.copy(trackIds = album.trackIds.filter { kept.containsKey(it) })
+        }.filterValues { it.trackIds.isNotEmpty() }
+        if (albumsKept.size != albumsBefore.size ||
+            albumsKept.any { (id, a) -> albumsBefore[id]?.trackIds != a.trackIds }
+        ) {
+            _albums.value = albumsKept
+            persistAlbumsToDisk()
+        }
     }
 
     fun isDownloaded(videoId: String): Boolean = _index.value.containsKey(videoId)
 
     fun isAlbumDownloaded(albumId: String): Boolean = _albums.value.containsKey(albumId)
 
-    fun localTrack(videoId: String): OfflineTrack? = _index.value[videoId]
+    fun localTrack(videoId: String): OfflineTrack? {
+        val offline = _index.value[videoId] ?: return null
+        val f = File(offline.filePath)
+        if (!f.exists() || f.length() < 1024L) {
+            // Файл пропал — убираем из индекса, чтобы не врать UI
+            _index.update { it - videoId }
+            persistIndexToDisk()
+            return null
+        }
+        return offline
+    }
 
     fun albumTracksOrdered(albumId: String): List<Track> {
         val album = _albums.value[albumId] ?: return emptyList()
@@ -84,18 +130,30 @@ object OfflineRepository {
     private fun offlineDir(): File =
         File(appContext.filesDir, "offline").apply { if (!exists()) mkdirs() }
 
-    suspend fun download(track: Track) {
+    /** Запуск скачивания трека; не привязан к lifecycle экрана. */
+    fun download(track: Track) {
         val videoId = track.videoId
         if (isDownloaded(videoId) || _downloadingIds.value.contains(videoId)) return
 
         _errors.update { it - videoId }
         _downloadingIds.update { it + videoId }
-        withContext(Dispatchers.IO) {
+        appScope.launch {
             try {
-                downloadTrackFile(track)
+                kotlinx.coroutines.withTimeout(180_000L) {
+                    downloadTrackFile(track)
+                }
+                _errors.update { it - videoId }
+            } catch (e: CancellationException) {
+                Log.w(TAG, "download cancelled $videoId")
+                cleanupPart(videoId)
+                throw e
             } catch (t: Throwable) {
                 Log.e(TAG, "Не удалось скачать трек $videoId", t)
-                _errors.update { it + (videoId to (t.message ?: "Не удалось скачать")) }
+                val msg = when (t) {
+                    is kotlinx.coroutines.TimeoutCancellationException -> "Таймаут скачивания (3 мин)"
+                    else -> t.message ?: "Не удалось скачать"
+                }
+                _errors.update { it + (videoId to msg) }
                 cleanupPart(videoId)
             } finally {
                 _downloadingIds.update { it - videoId }
@@ -103,7 +161,12 @@ object OfflineRepository {
         }
     }
 
-    suspend fun downloadAlbum(
+    /**
+     * Скачивание альбома в app-scope: уход с экрана/вкладки не прерывает очередь.
+     * В индекс альбома попадают только реально скачанные треки; «скачан»
+     * только если скачались все треки из списка.
+     */
+    fun downloadAlbum(
         albumId: String,
         title: String,
         thumbnail: String?,
@@ -114,26 +177,58 @@ object OfflineRepository {
         if (_downloadingAlbumIds.value.contains(albumId)) return
 
         _downloadingAlbumIds.update { it + albumId }
-        withContext(Dispatchers.IO) {
+        val snapshot = tracks.toList()
+        appScope.launch {
             try {
                 val orderedIds = mutableListOf<String>()
-                for (track in tracks) {
-                    orderedIds.add(track.videoId)
-                    if (!isDownloaded(track.videoId)) {
-                        _downloadingIds.update { it + track.videoId }
-                        try {
+                var cancelled = false
+                for (track in snapshot) {
+                    if (!isActive) {
+                        cancelled = true
+                        break
+                    }
+                    if (isDownloaded(track.videoId)) {
+                        orderedIds.add(track.videoId)
+                        continue
+                    }
+                    _downloadingIds.update { it + track.videoId }
+                    try {
+                        kotlinx.coroutines.withTimeout(180_000L) {
                             downloadTrackFile(track)
-                        } catch (t: Throwable) {
-                            Log.e(TAG, "Альбом $albumId: трек ${track.videoId}", t)
-                            _errors.update {
-                                it + (track.videoId to (t.message ?: "Не удалось скачать"))
-                            }
-                            cleanupPart(track.videoId)
-                        } finally {
-                            _downloadingIds.update { it - track.videoId }
                         }
+                        if (isDownloaded(track.videoId)) {
+                            orderedIds.add(track.videoId)
+                        }
+                    } catch (e: CancellationException) {
+                        cancelled = true
+                        cleanupPart(track.videoId)
+                        throw e
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Альбом $albumId: трек ${track.videoId}", t)
+                        _errors.update {
+                            it + (track.videoId to (t.message ?: "Не удалось скачать"))
+                        }
+                        cleanupPart(track.videoId)
+                    } finally {
+                        _downloadingIds.update { it - track.videoId }
                     }
                 }
+
+                if (cancelled) {
+                    Log.w(TAG, "Альбом $albumId: отменено, скачано ${orderedIds.size}/${snapshot.size}")
+                    return@launch
+                }
+
+                // Альбом «скачан» только когда есть все треки.
+                if (orderedIds.size < snapshot.size) {
+                    Log.w(
+                        TAG,
+                        "Альбом $albumId неполный: ${orderedIds.size}/${snapshot.size} — не помечаем скачанным",
+                    )
+                    // Частично скачанные треки остаются в offline tracks, альбом — нет
+                    return@launch
+                }
+
                 val offlineAlbum = OfflineAlbum(
                     albumId = albumId,
                     title = title,
@@ -143,6 +238,7 @@ object OfflineRepository {
                 )
                 _albums.update { it + (albumId to offlineAlbum) }
                 persistAlbumsToDisk()
+                Log.i(TAG, "Альбом $albumId скачан полностью (${orderedIds.size} треков)")
             } finally {
                 _downloadingAlbumIds.update { it - albumId }
             }
@@ -188,26 +284,53 @@ object OfflineRepository {
         }
     }
 
+    /**
+     * Stream URL (как у плеера) + простой OkHttp GET.
+     * Без HEAD/Range: googlevideo часто ломает второй запрос по тому же signed URL.
+     */
     private suspend fun downloadTrackFile(track: Track) {
         val videoId = track.videoId
-        val stream = ApiClient.api.stream(videoId)
+
+        val stream = try {
+            ApiClient.api.stream(videoId)
+        } catch (t: Throwable) {
+            throw java.io.IOException("Не удалось получить stream: ${t.message}", t)
+        }
+        if (stream.streamUrl.isBlank()) {
+            throw java.io.IOException("Пустой streamUrl")
+        }
+
         val extension = extensionFor(stream.mimeType)
         val outFile = File(offlineDir(), "$videoId.$extension")
         val tmpFile = File(offlineDir(), "$videoId.$extension.part")
+        if (tmpFile.exists()) tmpFile.delete()
 
-        val request = Request.Builder()
-            .url(stream.streamUrl)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36")
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw java.io.IOException("HTTP ${response.code}")
+        val reqBuilder = Request.Builder().url(stream.streamUrl)
+        var hasUa = false
+        for ((k, v) in stream.httpHeaders) {
+            try {
+                reqBuilder.header(k, v)
+                if (k.equals("User-Agent", ignoreCase = true)) hasUa = true
+            } catch (_: Throwable) {
             }
-            val body = response.body ?: throw java.io.IOException("Пустой ответ")
-            val contentLength = body.contentLength()
-            if (contentLength > MAX_DOWNLOAD_BYTES) {
-                throw java.io.IOException("Файл слишком большой (${contentLength} байт)")
+        }
+        if (!hasUa) {
+            reqBuilder.header(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            )
+        }
+        reqBuilder.header("Accept-Encoding", "identity")
+
+        httpClient.newCall(reqBuilder.build()).execute().use { response ->
+            if (!response.isSuccessful) {
+                val err = try { response.body?.string()?.take(200) } catch (_: Throwable) { null }
+                throw java.io.IOException("HTTP ${response.code}${err?.let { ": $it" } ?: ""}")
+            }
+            val body = response.body ?: throw java.io.IOException("Пустой body")
+            val reported = body.contentLength()
+            if (reported > MAX_DOWNLOAD_BYTES) {
+                throw java.io.IOException("Файл слишком большой ($reported)")
             }
 
             tmpFile.outputStream().use { output ->
@@ -219,29 +342,54 @@ object OfflineRepository {
                         if (read < 0) break
                         total += read
                         if (total > MAX_DOWNLOAD_BYTES) {
-                            throw java.io.IOException("Превышен лимит размера скачивания")
+                            throw java.io.IOException("Превышен лимит размера")
                         }
                         output.write(buffer, 0, read)
                     }
-                    if (total == 0L) {
-                        throw java.io.IOException("Скачан пустой файл")
+                    if (total < 8 * 1024L) {
+                        throw java.io.IOException("Скачано слишком мало: $total байт")
                     }
+                    Log.i(TAG, "downloaded $videoId: $total bytes")
                 }
             }
         }
 
+        if (outFile.exists()) outFile.delete()
         if (!tmpFile.renameTo(outFile)) {
             tmpFile.copyTo(outFile, overwrite = true)
             tmpFile.delete()
+        }
+        if (!outFile.exists() || outFile.length() < 8 * 1024L) {
+            throw java.io.IOException("Файл не записался (${outFile.length()})")
+        }
+        if (isClearlyNotAudio(outFile)) {
+            outFile.delete()
+            throw java.io.IOException("CDN отдал не аудио (HTML/JSON)")
         }
 
         val offlineTrack = OfflineTrack(
             track = track,
             filePath = outFile.absolutePath,
-            mimeType = stream.mimeType,
+            mimeType = stream.mimeType.ifBlank { "audio/mp4" },
         )
         _index.update { it + (videoId to offlineTrack) }
         persistIndexToDisk()
+        Log.i(TAG, "indexed $videoId size=${outFile.length()} path=${outFile.absolutePath}")
+    }
+
+    /** Только явный мусор (HTML/JSON-ошибка), не строгая проверка контейнера. */
+    private fun isClearlyNotAudio(file: File): Boolean {
+        return try {
+            file.inputStream().use { input ->
+                val buf = ByteArray(64)
+                val n = input.read(buf)
+                if (n <= 0) return true
+                val head = buf.decodeToString(0, n).trimStart()
+                head.startsWith("<") || head.startsWith("{") || head.startsWith("<?xml")
+            }
+        } catch (_: Throwable) {
+            true
+        }
     }
 
     private fun cleanupPart(videoId: String) {
@@ -268,7 +416,10 @@ object OfflineRepository {
             val json = file.readText()
             val type = object : TypeToken<Map<String, OfflineTrack>>() {}.type
             val loaded: Map<String, OfflineTrack> = gson.fromJson(json, type) ?: emptyMap()
-            _index.value = loaded.filterValues { File(it.filePath).exists() }
+            _index.value = loaded.filterValues { offline ->
+                val f = File(offline.filePath)
+                f.exists() && f.length() >= 1024L
+            }
         }.onFailure { Log.e(TAG, "Не удалось прочитать offline_index.json", it) }
     }
 
@@ -294,4 +445,3 @@ object OfflineRepository {
         }.onFailure { Log.e(TAG, "Не удалось сохранить offline_albums.json", it) }
     }
 }
-

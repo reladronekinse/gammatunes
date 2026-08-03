@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!--
+      Разрешаем обычный HTTP без TLS: приложение обращается к встроенному
+      бэкенду на 127.0.0.1 (см. backend/LocalBackend.kt) — это трафик внутри
+      самого телефона, наружу он не выходит. Если когда-нибудь понадобится
+      внешний backend на ПК (эмулятор — 10.0.2.2, реальный телефон — LAN-IP),
+      cleartext для него тоже разрешён этим же base-config.
+    -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

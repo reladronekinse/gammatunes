@@ -19,20 +19,18 @@ backend/    Standalone FastAPI backend (optional, PC/server use)
 
 ### Android app
 
-Requirements: Android Studio (or the command-line Android SDK/build-tools)
-and a JDK 17.
+Requirements: Android Studio (or the command-line Android SDK/build-tools),
+a JDK 17, and Python 3.11 on the **build machine** (needed by the Chaquopy
+plugin to resolve `ytmusicapi` / `yt-dlp` into the APK). No Python install is
+required on the phone.
 
 ```bash
 cd android
 ./gradlew assembleDebug
 ```
 
-The resulting APK will be at `android/app/build/outputs/apk/debug/app-debug.apk`.
-
-The on-device backend (`android/app/src/main/python/backend_server.py`) is
-bundled into the APK automatically by the Chaquopy Gradle plugin — no
-separate Python install is needed on the phone itself, only on the machine
-that builds the APK.
+The resulting APK will be at
+`android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ### Standalone backend (optional)
 
@@ -41,6 +39,23 @@ cd backend
 pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+To point the app at an external backend instead of the on-device one, change
+`LocalBackend.BASE_URL` in
+`android/app/src/main/java/com/gammatunes/app/backend/LocalBackend.kt`.
+
+## Features (0.2)
+
+- Embedded Python backend (ytmusicapi + yt-dlp) via Chaquopy
+- Material 3 UI with Liquid Glass surfaces
+- Search (artists + tracks), artist/album detail
+- Playback via ExoPlayer + MediaSession foreground service (notification controls)
+- Queue next/previous, repeat modes, seek
+- Offline downloads (tracks and full albums)
+- Browser-header login for likes and library playlists
+- Account screen (liked songs, library playlists)
+- Appearance settings (cover style, seek bar, accents)
+- EN / RU localization
 
 ## Acknowledgments
 

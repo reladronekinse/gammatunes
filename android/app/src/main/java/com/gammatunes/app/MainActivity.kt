@@ -41,7 +41,12 @@ import com.gammatunes.app.player.PlayerState
 import com.gammatunes.app.player.rememberPlayerState
 import com.gammatunes.app.ui.screens.AlbumDetailScreen
 import com.gammatunes.app.ui.screens.ArtistDetailScreen
+import com.gammatunes.app.offline.OfflineRepository
 import com.gammatunes.app.ui.screens.MoreScreen
+import com.gammatunes.app.ui.screens.AccountScreen
+import com.gammatunes.app.ui.screens.AppearanceScreen
+import com.gammatunes.app.ui.screens.OfflineTracksScreen
+import com.gammatunes.app.ui.screens.OfflineAlbumsScreen
 import com.gammatunes.app.ui.screens.PlayerScreen
 import com.gammatunes.app.ui.screens.SearchScreen
 import androidx.compose.runtime.CompositionLocalProvider
@@ -118,13 +123,16 @@ private fun AppContent() {
         }
     }
 
-
+    // queue — список треков, в контексте которого был выбран трек (все
+    // результаты поиска, все треки альбома), нужен плееру для перелистывания
+    // кнопками "предыдущий"/"следующий".
     val onTrackClick: (Track, List<Track>) -> Unit = { track, queue ->
         playerState.play(track, queue)
         openPlayerTab()
     }
 
-
+    // Контент сверху (weight), нижняя панель отдельным блоком со своим фоном —
+    // контент вкладок больше не просвечивает сквозь меню и не наслаивается на него.
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -171,8 +179,8 @@ private fun AppContent() {
                     onTrackClick = onTrackClick,
                     onBack = { navController.popBackStack() },
                 )
-
-
+                // ^ AlbumDetailScreen сам знает полный список треков альбома —
+                // он передаёт его как queue напрямую в onTrackClick(track, queue).
             }
             composable(Screen.Player.route) {
                 PlayerScreen(
@@ -181,14 +189,53 @@ private fun AppContent() {
                         val encodedId = URLEncoder.encode(artistId, "UTF-8")
                         navController.navigate("artist/$encodedId")
                     },
+                    onAlbumClick = { albumId ->
+                        val encodedAlbumId = URLEncoder.encode(albumId, "UTF-8")
+                        navController.navigate("album/$encodedAlbumId")
+                    },
                 )
             }
             composable(Screen.More.route) {
-                MoreScreen(onTrackClick = onTrackClick)
+                MoreScreen(
+                    onOpenAccount = { navController.navigate("more/account") },
+                    onOpenAppearance = { navController.navigate("more/appearance") },
+                    onOpenOfflineTracks = { navController.navigate("more/offline_tracks") },
+                    onOpenOfflineAlbums = { navController.navigate("more/offline_albums") },
+                )
+            }
+            composable("more/account") {
+                AccountScreen(
+                    onTrackClick = onTrackClick,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable("more/appearance") {
+                AppearanceScreen(onBack = { navController.popBackStack() })
+            }
+            composable("more/offline_tracks") {
+                OfflineTracksScreen(
+                    onTrackClick = onTrackClick,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable("more/offline_albums") {
+                OfflineAlbumsScreen(
+                    onAlbumClick = { albumId ->
+                        // offline albums: play first track / open online album detail
+                        val tracks = OfflineRepository.albumTracksOrdered(albumId)
+                        if (tracks.isNotEmpty()) {
+                            onTrackClick(tracks.first(), tracks)
+                        } else {
+                            val encoded = URLEncoder.encode(albumId, "UTF-8")
+                            navController.navigate("album/$encoded")
+                        }
+                    },
+                    onBack = { navController.popBackStack() },
+                )
             }
         }
 
-
+        // Сплошной фон под мини-плеером и таббаром — контент сверху до него не доходит.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -277,7 +324,8 @@ private fun BottomBar(navController: NavHostController, currentRoute: String?) {
     ) {
         bottomTabs.forEach { screen ->
             NavigationBarItem(
-                selected = currentRoute == screen.route,
+                selected = currentRoute == screen.route ||
+                        (screen.route == Screen.More.route && currentRoute?.startsWith("more/") == true),
                 onClick = {
                     navController.navigate(screen.route) {
                         popUpTo(navController.graph.startDestinationId)
@@ -302,4 +350,3 @@ private fun BottomBar(navController: NavHostController, currentRoute: String?) {
         }
     }
 }
-

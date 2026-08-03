@@ -1,3 +1,16 @@
+"""
+Простой бэкенд для Android-клиента YTM.
+
+Отвечает за:
+- поиск артистов через ytmusicapi (неофициальная YT Music API) и их альбомы
+- поиск треков (по желанию — используется отдельно от основного флоу клиента)
+- получение прямой ссылки на аудиопоток трека через yt-dlp
+
+Запуск:
+    pip install -r requirements.txt
+    uvicorn main:app --host 0.0.0.0 --port 8000
+"""
+
 from __future__ import annotations
 
 import re
@@ -13,6 +26,7 @@ from ytmusicapi import YTMusic
 
 app = FastAPI(title="YTM Backend", version="0.1.0")
 
+# Для локальной разработки разрешаем всё; в проде сузьте список origin'ов.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,8 +34,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-yt = YTMusic()
+yt = YTMusic()  # анонимный доступ; для персональных плейлистов нужен headers_auth.json
 
+
+# --------------------------------------------------------------------------- #
+# Модели ответа
+# --------------------------------------------------------------------------- #
 
 class Track(BaseModel):
     videoId: str
@@ -52,6 +70,8 @@ class Artist(BaseModel):
 
 
 class ArtistSearchResponse(BaseModel):
+    """Результат поиска: карточки артистов (без альбомов — те подгружаются
+    отдельно по тапу через /artists/{artist_id})."""
 
     artists: list[Artist]
 
@@ -68,9 +88,24 @@ class StreamResponse(BaseModel):
     streamUrl: str
     mimeType: str
     bitrate: int
+    # HTTP-заголовки (в первую очередь User-Agent), с которыми yt-dlp получил
+    # эту подписанную ссылку. Без них клиент, запрашивающий поток, получает
+    # троттлинг/обрыв от YouTube спустя несколько секунд после начала
+    # воспроизведения — см. комментарий у _extract_stream ниже.
     httpHeaders: dict[str, str] = {}
 
 
+# --------------------------------------------------------------------------- #
+# Вспомогательное
+# --------------------------------------------------------------------------- #
+
+# БАГ, который здесь был: thumbnails[-1] считался "самой большой" картинкой,
+# хотя это просто последний элемент списка, отданного конкретным эндпоинтом
+# YTMusic — для многих карточек (артисты, часть поисковой выдачи) там лежат
+# только маленькие превью 60x60/120x120. CDN (lh3.googleusercontent.com)
+# при этом отдаёт любой размер через параметр в самом URL (=w..-h..-...)
+# независимо от размера в ответе API — поэтому размер переписывается прямо
+# в URL, а не берётся на веру из списка.
 _THUMBNAIL_SIZE = 544
 _THUMBNAIL_SIZE_RE = re.compile(r"=w\d+-h\d+")
 
@@ -122,6 +157,10 @@ def _to_album(item: dict[str, Any]) -> Album | None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Эндпоинты
+# --------------------------------------------------------------------------- #
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -131,7 +170,7 @@ def health() -> dict[str, str]:
 def search(q: str = Query(..., min_length=1), limit: int = 25) -> SearchResponse:
     try:
         raw = yt.search(q, filter="songs", limit=limit)
-    except Exception as exc:
+    except Exception as exc:  # ytmusicapi может кидать разные исключения
         raise HTTPException(status_code=502, detail=f"YTMusic search failed: {exc}") from exc
 
     tracks = [t for t in (_to_track(item) for item in raw) if t is not None]
@@ -140,6 +179,7 @@ def search(q: str = Query(..., min_length=1), limit: int = 25) -> SearchResponse
 
 @app.get("/search/artists", response_model=ArtistSearchResponse)
 def search_artists(q: str = Query(..., min_length=1), limit: int = 20) -> ArtistSearchResponse:
+    """Поиск отдаёт карточки артистов (не треков)."""
     try:
         raw = yt.search(q, filter="artists", limit=limit)
     except Exception as exc:
@@ -162,6 +202,7 @@ def search_artists(q: str = Query(..., min_length=1), limit: int = 20) -> Artist
 
 @app.get("/artists/{artist_id}", response_model=Artist)
 def artist_detail(artist_id: str) -> Artist:
+    """Полная карточка артиста с альбомами — подгружается по тапу на карточку из поиска."""
     try:
         details = yt.get_artist(artist_id)
     except Exception as exc:
@@ -170,6 +211,14 @@ def artist_detail(artist_id: str) -> Artist:
     albums_section = details.get("albums") or {}
     raw_albums = albums_section.get("results") or []
 
+    # get_artist() отдаёт только ПЕРВУЮ страницу альбомов (обычно около
+    # десятка) плюс continuation-токен `params`, если у артиста их больше.
+    # ВАЖНО: чтобы дочерпать остальное, get_artist_albums() нужно вызывать
+    # не с ID самого артиста, а с собственным browseId секции "Альбомы"
+    # (details["albums"]["browseId"]) — это отдельный browse-эндпоинт
+    # ("посмотреть все альбомы"), а не канал артиста. Раньше здесь по ошибке
+    # передавался artist_id — запрос падал, ошибка тихо проглатывалась в
+    # except, и в итоге всегда оставалась только первая страница.
     params = albums_section.get("params")
     albums_browse_id = albums_section.get("browseId")
     if params and albums_browse_id:
@@ -194,6 +243,7 @@ def artist_detail(artist_id: str) -> Artist:
 
 @app.get("/albums/{album_id}", response_model=AlbumTracksResponse)
 def album_tracks(album_id: str) -> AlbumTracksResponse:
+    """Треки конкретного альбома — подгружаются по тапу на карточку альбома."""
     try:
         album = yt.get_album(album_id)
     except Exception as exc:
@@ -207,6 +257,8 @@ def album_tracks(album_id: str) -> AlbumTracksResponse:
         track = _to_track(item)
         if track is None:
             continue
+        # Треки внутри альбома обычно не несут собственную обложку/название
+        # альбома — подставляем их с уровня альбома.
         if track.thumbnail is None:
             track = track.model_copy(update={"thumbnail": album_thumbnail})
         if track.album is None:
@@ -221,7 +273,16 @@ def album_tracks(album_id: str) -> AlbumTracksResponse:
     )
 
 
-_STREAM_CACHE_SAFETY_SECONDS = 300
+# БАГ, который здесь был: раньше эта функция кэшировалась через
+# @lru_cache(maxsize=256) без какого-либо TTL. Ссылки на аудиопоток, которые
+# отдаёт YouTube, — подписанные и живут ограниченное время (обычно несколько
+# часов), после чего сервер начинает отвечать на них ошибкой и трек
+# перестаёт грузиться. lru_cache этого не знал и продолжал отдавать один и
+# тот же протухший URL до перезапуска процесса. Решение — кэш с TTL: срок
+# годности берём из параметра `expire` в самом URL (если он есть), с
+# небольшим запасом на всякий случай, и как только он истёк — извлекаем
+# ссылку заново.
+_STREAM_CACHE_SAFETY_SECONDS = 300  # обновляем чуть заранее истечения
 _stream_cache: dict[str, tuple[float, StreamResponse]] = {}
 
 
@@ -232,6 +293,8 @@ def _stream_expiry(stream_url: str) -> float:
             return float(expire) - _STREAM_CACHE_SAFETY_SECONDS
     except Exception:
         pass
+    # Не удалось распарсить `expire` из ссылки — подстраховываемся
+    # консервативным TTL, чтобы не кэшировать вечно.
     return time.time() + 3600
 
 
@@ -263,6 +326,16 @@ def _extract_stream(video_id: str) -> StreamResponse:
         fmt = max(audio_formats, key=lambda f: f.get("abr") or 0)
         stream_url = fmt["url"]
 
+    # БАГ (обрыв воспроизведения через ~15 секунд): googlevideo-ссылка,
+    # которую отдаёт yt-dlp, подписана не только сама по себе — YouTube
+    # также сверяет заголовки запроса (в первую очередь User-Agent) с теми,
+    # что использовались при получении ссылки. Раньше мы отдавали клиенту
+    # только сам streamUrl, и ExoPlayer запрашивал поток со своими
+    # заголовками по умолчанию: несовпадение не блокирует запрос сразу
+    # (первые секунды буфера успевают прогрузиться), но затем YouTube
+    # начинает жёстко троттлить соединение, и трек "зависает"/обрывается.
+    # Решение — прокидывать точные заголовки, которые использовал yt-dlp,
+    # клиенту, чтобы ExoPlayer запрашивал поток с теми же заголовками.
     http_headers = dict(fmt.get("http_headers") or info.get("http_headers") or {})
 
     result = StreamResponse(

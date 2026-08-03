@@ -17,16 +17,28 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.gammatunes.app.backend.LocalBackend
 import com.gammatunes.app.model.Artist
 import com.gammatunes.app.model.Track
 import com.gammatunes.app.network.ApiClient
 import com.gammatunes.app.ui.components.DownloadButton
 import com.gammatunes.app.ui.components.LiquidGlassSurface
-import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
 import com.gammatunes.app.ui.i18n.LocalStrings
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
-
+/**
+ * Поиск отдаёт и артистов, и отдельные треки (песни) — как в самом
+ * YouTube Music: тап на артиста открывает его страницу со всеми альбомами
+ * (ArtistDetailScreen), тап на трек сразу запускает воспроизведение.
+ *
+ * Оба запроса выполняются параллельно. Без сети / при недоступном
+ * бэкенде показываем понятную ошибку — приложение не падает.
+ */
 @Composable
 fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Track>) -> Unit) {
     val strings = LocalStrings.current
@@ -45,14 +57,48 @@ fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Tra
         hasSearched = true
         scope.launch {
             try {
-                val artistsDeferred = async { ApiClient.api.searchArtists(query).artists }
-                val tracksDeferred = async { ApiClient.api.searchTracks(query).results }
-                artistResults = artistsDeferred.await()
-                trackResults = tracksDeferred.await()
-            } catch (e: Exception) {
+                // Если встроенный бэкенд ещё не поднялся / упал — не ходим в сеть
+                // и не роняем UI необработанным исключением.
+                if (LocalBackend.lastError != null) {
+                    error = LocalBackend.lastError
+                    artistResults = emptyList()
+                    trackResults = emptyList()
+                    return@launch
+                }
+                val ready = LocalBackend.awaitReady(timeoutMs = 8_000)
+                if (!ready) {
+                    error = strings.offlineOrBackendError
+                    artistResults = emptyList()
+                    trackResults = emptyList()
+                    return@launch
+                }
+                coroutineScope {
+                    val artistsDeferred = async {
+                        runCatching { ApiClient.api.searchArtists(query).artists }
+                            .getOrElse { emptyList() }
+                    }
+                    val tracksDeferred = async {
+                        runCatching { ApiClient.api.searchTracks(query).results }
+                            .getOrElse { emptyList() }
+                    }
+                    val artists = artistsDeferred.await()
+                    val tracks = tracksDeferred.await()
+                    artistResults = artists
+                    trackResults = tracks
+                    if (artists.isEmpty() && tracks.isEmpty()) {
+                        // Оба пустые — либо реально ничего, либо оба запроса упали.
+                        // Попробуем один раз синхронно, чтобы вытащить текст ошибки.
+                        try {
+                            ApiClient.api.searchTracks(query)
+                        } catch (t: Throwable) {
+                            error = friendlyNetworkError(t, strings)
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
                 artistResults = emptyList()
                 trackResults = emptyList()
-                error = e.message ?: "Search failed"
+                error = friendlyNetworkError(t, strings)
             } finally {
                 isLoading = false
             }
@@ -131,7 +177,21 @@ fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Tra
     }
 }
 
+private fun friendlyNetworkError(t: Throwable, strings: com.gammatunes.app.ui.i18n.AppStrings): String {
+    val cause = generateSequence(t) { it.cause }.firstOrNull {
+        it is UnknownHostException || it is SocketTimeoutException || it is IOException
+    }
+    return when {
+        cause is UnknownHostException -> strings.offlineOrBackendError
+        cause is SocketTimeoutException -> strings.offlineOrBackendError
+        t.message?.contains("Failed to connect", ignoreCase = true) == true -> strings.offlineOrBackendError
+        t.message?.contains("Unable to resolve host", ignoreCase = true) == true -> strings.offlineOrBackendError
+        t.message?.contains("Connection refused", ignoreCase = true) == true -> strings.offlineOrBackendError
+        else -> t.message ?: strings.offlineOrBackendError
+    }
+}
 
+/** Карточка артиста в списке результатов поиска. */
 @Composable
 private fun ArtistResultRow(artist: Artist, onClick: () -> Unit) {
     LiquidGlassSurface(
@@ -146,8 +206,6 @@ private fun ArtistResultRow(artist: Artist, onClick: () -> Unit) {
                 .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-
-
             AsyncImage(
                 model = artist.thumbnail,
                 contentDescription = artist.name,
@@ -211,4 +269,3 @@ fun TrackRow(track: Track, onClick: () -> Unit) {
         }
     }
 }
-

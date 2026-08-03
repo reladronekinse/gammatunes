@@ -15,7 +15,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
 import com.gammatunes.app.ui.theme.LocalGlassTokens
 
-
+/**
+ * Имитация "Liquid Glass" — полупрозрачная, слегка размытая поверхность
+ * со светящейся окантовкой сверху, как в новом дизайн-языке Apple/Android 16.
+ *
+ * Технически это не настоящее размытие фона под карточкой (для этого нужен
+ * RenderEffect.createBlurEffect и захват содержимого позади, что сложнее),
+ * а комбинация: полупрозрачная заливка + blur самого контента + градиентная
+ * рамка-блик. Для большинства UI-кейсов (плеер, чипы, миниплеер) этого
+ * достаточно, чтобы получить нужное ощущение "стекла".
+ */
 @Composable
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
@@ -54,7 +63,7 @@ fun LiquidGlassSurface(
     }
 }
 
-
+/** Тонкая версия для чипов/бейджей поверх обложек. */
 @Composable
 fun LiquidGlassChip(
     modifier: Modifier = Modifier,
@@ -68,4 +77,3 @@ fun LiquidGlassChip(
 }
 
 internal val GlassHighlight = Color(0x66FFFFFF)
-

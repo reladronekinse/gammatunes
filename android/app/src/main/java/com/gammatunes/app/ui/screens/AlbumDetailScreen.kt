@@ -26,7 +26,12 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import com.gammatunes.app.ui.i18n.LocalStrings
 
-
+/**
+ * Полноценная страница альбома со списком треков — раньше это тоже был
+ * всплывающий Dialog поверх страницы артиста, теперь обычный экран в
+ * NavHost (та же причина, что и для страницы артиста: попап неудобно
+ * скроллить и он не даёт нормально работать системной кнопке "назад").
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumDetailScreen(
@@ -54,7 +59,7 @@ fun AlbumDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(album?.title ?: strings.album) },
+                title = { Text(album?.title ?: strings.album, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back)
@@ -119,7 +124,14 @@ fun AlbumDetailScreen(
     }
 }
 
-
+/**
+ * Строка трека в треклисте альбома. В отличие от TrackRow (используется в
+ * поиске) — без обложки: в контексте одного альбома у всех треков она и так
+ * одна и та же (обложка альбома уже показана в шапке экрана), поэтому
+ * повторять её у каждой строки избыточно — только занимает место. Вместо
+ * обложки — порядковый номер трека в альбоме, как в самом YouTube Music.
+ * Ряд компактнее, чем TrackRow (меньше отступов, без карточки-подложки).
+ */
 @Composable
 private fun AlbumTrackRow(number: Int, track: Track, onClick: () -> Unit) {
     Row(
@@ -162,7 +174,7 @@ private fun AlbumHeader(title: String, thumbnail: String?) {
         Text(
             text = title,
             style = MaterialTheme.typography.headlineSmall,
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
@@ -221,4 +233,3 @@ private fun AlbumDownloadRow(
         }
     }
 }
-

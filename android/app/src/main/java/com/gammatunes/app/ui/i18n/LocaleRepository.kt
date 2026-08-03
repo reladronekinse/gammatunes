@@ -27,4 +27,3 @@ object LocaleRepository {
         _language.value = lang
     }
 }
-
