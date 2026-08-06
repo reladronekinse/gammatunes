@@ -2,7 +2,6 @@ package com.gammatunes.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Тёмная палитра в духе YT Music: приглушённый красный акцент, не «кислота».
 val SeedPrimary = Color(0xFFFF4444)
 val SeedOnPrimary = Color(0xFFFFFFFF)
 val SeedPrimaryContainer = Color(0xFF5C1A1A)
@@ -24,11 +23,9 @@ val DarkSurfaceVariant = Color(0xFF2C2C2C)
 val DarkOnSurfaceVariant = Color(0xFFB5B5B5)
 val DarkOutline = Color(0xFF5A5A5A)
 
-// Liquid Glass на тёмном фоне
 val GlassTintDark = Color(0x28FFFFFF)
 val GlassBorderDark = Color(0x33FFFFFF)
 
-// Светлая (не используется — оставлено на случай)
 val LightBackground = Color(0xFFFFFBFE)
 val LightSurface = Color(0xFFFFFFFF)
 val GlassTintLight = Color(0x55FFFFFF)

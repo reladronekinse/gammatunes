@@ -1,8 +1,12 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.gammatunes.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.gammatunes.app.ui.components.ZoomableImage
 import com.gammatunes.app.model.AlbumTracksResponse
 import com.gammatunes.app.model.Track
 import com.gammatunes.app.network.ApiClient
@@ -26,12 +31,6 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import com.gammatunes.app.ui.i18n.LocalStrings
 
-/**
- * Полноценная страница альбома со списком треков — раньше это тоже был
- * всплывающий Dialog поверх страницы артиста, теперь обычный экран в
- * NavHost (та же причина, что и для страницы артиста: попап неудобно
- * скроллить и он не даёт нормально работать системной кнопке "назад").
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlbumDetailScreen(
@@ -65,6 +64,17 @@ fun AlbumDetailScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back)
                     }
                 },
+                actions = {
+                    val loaded = album
+                    if (loaded != null) {
+                        AlbumDownloadIconButton(
+                            albumId = loaded.albumId,
+                            title = loaded.title,
+                            thumbnail = loaded.thumbnail,
+                            tracks = loaded.tracks,
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = androidx.compose.ui.graphics.Color.Transparent,
                 ),
@@ -92,13 +102,6 @@ fun AlbumDetailScreen(
                     val loadedAlbum = album!!
                     Spacer(Modifier.height(8.dp))
                     AlbumHeader(title = loadedAlbum.title, thumbnail = loadedAlbum.thumbnail)
-                    Spacer(Modifier.height(12.dp))
-                    AlbumDownloadRow(
-                        albumId = loadedAlbum.albumId,
-                        title = loadedAlbum.title,
-                        thumbnail = loadedAlbum.thumbnail,
-                        tracks = loadedAlbum.tracks,
-                    )
                     Spacer(Modifier.height(16.dp))
                     if (loadedAlbum.tracks.isEmpty()) {
                         Text(
@@ -109,7 +112,7 @@ fun AlbumDetailScreen(
                         LazyColumn(
                             contentPadding = PaddingValues(bottom = 24.dp),
                         ) {
-                            itemsIndexed(loadedAlbum.tracks, key = { _, t -> t.videoId }) { index, track ->
+                            itemsIndexed(loadedAlbum.tracks, key = { i, t -> "${i}:${t.videoId}" }) { index, track ->
                                 AlbumTrackRow(
                                     number = index + 1,
                                     track = track,
@@ -124,20 +127,22 @@ fun AlbumDetailScreen(
     }
 }
 
-/**
- * Строка трека в треклисте альбома. В отличие от TrackRow (используется в
- * поиске) — без обложки: в контексте одного альбома у всех треков она и так
- * одна и та же (обложка альбома уже показана в шапке экрана), поэтому
- * повторять её у каждой строки избыточно — только занимает место. Вместо
- * обложки — порядковый номер трека в альбоме, как в самом YouTube Music.
- * Ряд компактнее, чем TrackRow (меньше отступов, без карточки-подложки).
- */
 @Composable
 private fun AlbumTrackRow(number: Int, track: Track, onClick: () -> Unit) {
+    var showDownload by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val index by OfflineRepository.index.collectAsState()
+    val downloadingIds by OfflineRepository.downloadingIds.collectAsState()
+    val isDownloaded = index.containsKey(track.videoId)
+    val isDownloading = downloadingIds.contains(track.videoId)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showDownload = true },
+            )
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -154,14 +159,25 @@ private fun AlbumTrackRow(number: Int, track: Track, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        DownloadButton(track = track)
+        if (showDownload || isDownloading || isDownloaded) {
+            DownloadButton(track = track)
+        }
+    }
+
+    if (showDownload && !isDownloaded && !isDownloading) {
+
+        LaunchedEffect(track.videoId) {
+            OfflineRepository.download(track)
+            kotlinx.coroutines.delay(2500)
+            showDownload = false
+        }
     }
 }
 
 @Composable
 private fun AlbumHeader(title: String, thumbnail: String?) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        AsyncImage(
+        ZoomableImage(
             model = thumbnail,
             contentDescription = title,
             modifier = Modifier
@@ -180,9 +196,8 @@ private fun AlbumHeader(title: String, thumbnail: String?) {
     }
 }
 
-
 @Composable
-private fun AlbumDownloadRow(
+private fun AlbumDownloadIconButton(
     albumId: String,
     title: String,
     thumbnail: String?,
@@ -195,41 +210,38 @@ private fun AlbumDownloadRow(
     val isDownloading = downloadingAlbums.contains(albumId)
     val scope = rememberCoroutineScope()
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        OutlinedButton(
-            onClick = {
-                scope.launch {
-                    if (isDownloaded) {
-                        OfflineRepository.deleteAlbum(albumId, deleteTrackFiles = true)
-                    } else if (!isDownloading) {
-                        OfflineRepository.downloadAlbum(
-                            albumId = albumId,
-                            title = title,
-                            thumbnail = thumbnail,
-                            tracks = tracks,
-                        )
-                    }
+    IconButton(
+        onClick = {
+            scope.launch {
+                if (isDownloaded) {
+                    OfflineRepository.deleteAlbum(albumId, deleteTrackFiles = true)
+                } else if (!isDownloading && tracks.isNotEmpty()) {
+                    OfflineRepository.downloadAlbum(
+                        albumId = albumId,
+                        title = title,
+                        thumbnail = thumbnail,
+                        tracks = tracks,
+                    )
                 }
-            },
-            enabled = tracks.isNotEmpty() && !isDownloading,
-        ) {
-            if (isDownloading) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-                Text(strings.downloadingAlbum)
-            } else if (isDownloaded) {
-                Icon(Icons.Default.DownloadDone, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(strings.albumDownloaded)
-            } else {
-                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(strings.downloadAlbum)
             }
+        },
+        enabled = tracks.isNotEmpty() || isDownloaded,
+    ) {
+        when {
+            isDownloading -> CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+            )
+            isDownloaded -> Icon(
+                Icons.Default.DownloadDone,
+                contentDescription = strings.albumDownloaded,
+                modifier = Modifier.size(22.dp),
+            )
+            else -> Icon(
+                Icons.Default.Download,
+                contentDescription = strings.downloadAlbum,
+                modifier = Modifier.size(22.dp),
+            )
         }
     }
 }

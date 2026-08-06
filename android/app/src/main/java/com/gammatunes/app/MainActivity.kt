@@ -23,6 +23,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -41,16 +42,22 @@ import com.gammatunes.app.player.PlayerState
 import com.gammatunes.app.player.rememberPlayerState
 import com.gammatunes.app.ui.screens.AlbumDetailScreen
 import com.gammatunes.app.ui.screens.ArtistDetailScreen
+import com.gammatunes.app.ui.screens.ArtistReleaseKind
+import com.gammatunes.app.ui.screens.ArtistAlbumsGridScreen
+import com.gammatunes.app.ui.screens.ArtistSongsScreen
 import com.gammatunes.app.offline.OfflineRepository
 import com.gammatunes.app.ui.screens.MoreScreen
 import com.gammatunes.app.ui.screens.AccountScreen
 import com.gammatunes.app.ui.screens.AppearanceScreen
 import com.gammatunes.app.ui.screens.OfflineTracksScreen
+import com.gammatunes.app.ui.screens.OfflineAlbumDetailScreen
 import com.gammatunes.app.ui.screens.OfflineAlbumsScreen
 import com.gammatunes.app.ui.screens.PlayerScreen
 import com.gammatunes.app.ui.screens.SearchScreen
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
+import com.gammatunes.app.ui.theme.DynamicAccent
+import androidx.compose.runtime.LaunchedEffect
 import com.gammatunes.app.ui.i18n.LocalLanguage
 import com.gammatunes.app.ui.i18n.LocalStrings
 import com.gammatunes.app.ui.i18n.LocaleRepository
@@ -113,8 +120,19 @@ private fun AppContent() {
     val strings = LocalStrings.current
     val navController = rememberNavController()
     val playerState = rememberPlayerState()
+    val context = LocalContext.current
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+
+
+    LaunchedEffect(playerState.currentTrack?.thumbnail) {
+        val thumb = playerState.currentTrack?.thumbnail
+        if (thumb.isNullOrBlank()) {
+            DynamicAccent.clear()
+        } else {
+            DynamicAccent.updateFromThumbnail(context, thumb)
+        }
+    }
 
     fun openPlayerTab() {
         navController.navigate(Screen.Player.route) {
@@ -123,16 +141,16 @@ private fun AppContent() {
         }
     }
 
-    // queue — список треков, в контексте которого был выбран трек (все
-    // результаты поиска, все треки альбома), нужен плееру для перелистывания
-    // кнопками "предыдущий"/"следующий".
+
+
+
     val onTrackClick: (Track, List<Track>) -> Unit = { track, queue ->
         playerState.play(track, queue)
         openPlayerTab()
     }
 
-    // Контент сверху (weight), нижняя панель отдельным блоком со своим фоном —
-    // контент вкладок больше не просвечивает сквозь меню и не наслаивается на него.
+
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -160,8 +178,60 @@ private fun AppContent() {
                 arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
             ) { backStackEntry ->
                 val encodedId = backStackEntry.arguments?.getString("artistId").orEmpty()
+                val artistIdDecoded = URLDecoder.decode(encodedId, "UTF-8")
                 ArtistDetailScreen(
+                    artistId = artistIdDecoded,
+                    onAlbumClick = { album ->
+                        val encodedAlbumId = URLEncoder.encode(album.albumId, "UTF-8")
+                        navController.navigate("album/$encodedAlbumId")
+                    },
+                    onTrackClick = onTrackClick,
+                    onOpenPopular = {
+                        navController.navigate("artist/$encodedId/songs")
+                    },
+                    onOpenAlbums = {
+                        navController.navigate("artist/$encodedId/albums")
+                    },
+                    onOpenSingles = {
+                        navController.navigate("artist/$encodedId/singles")
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = "artist/{artistId}/songs",
+                arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
+            ) { entry ->
+                val encodedId = entry.arguments?.getString("artistId").orEmpty()
+                ArtistSongsScreen(
                     artistId = URLDecoder.decode(encodedId, "UTF-8"),
+                    onTrackClick = onTrackClick,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = "artist/{artistId}/albums",
+                arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
+            ) { entry ->
+                val encodedId = entry.arguments?.getString("artistId").orEmpty()
+                ArtistAlbumsGridScreen(
+                    artistId = URLDecoder.decode(encodedId, "UTF-8"),
+                    kind = ArtistReleaseKind.ALBUMS,
+                    onAlbumClick = { album ->
+                        val encodedAlbumId = URLEncoder.encode(album.albumId, "UTF-8")
+                        navController.navigate("album/$encodedAlbumId")
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = "artist/{artistId}/singles",
+                arguments = listOf(navArgument("artistId") { type = NavType.StringType }),
+            ) { entry ->
+                val encodedId = entry.arguments?.getString("artistId").orEmpty()
+                ArtistAlbumsGridScreen(
+                    artistId = URLDecoder.decode(encodedId, "UTF-8"),
+                    kind = ArtistReleaseKind.SINGLES,
                     onAlbumClick = { album ->
                         val encodedAlbumId = URLEncoder.encode(album.albumId, "UTF-8")
                         navController.navigate("album/$encodedAlbumId")
@@ -179,8 +249,8 @@ private fun AppContent() {
                     onTrackClick = onTrackClick,
                     onBack = { navController.popBackStack() },
                 )
-                // ^ AlbumDetailScreen сам знает полный список треков альбома —
-                // он передаёт его как queue напрямую в onTrackClick(track, queue).
+
+
             }
             composable(Screen.Player.route) {
                 PlayerScreen(
@@ -221,21 +291,27 @@ private fun AppContent() {
             composable("more/offline_albums") {
                 OfflineAlbumsScreen(
                     onAlbumClick = { albumId ->
-                        // offline albums: play first track / open online album detail
-                        val tracks = OfflineRepository.albumTracksOrdered(albumId)
-                        if (tracks.isNotEmpty()) {
-                            onTrackClick(tracks.first(), tracks)
-                        } else {
-                            val encoded = URLEncoder.encode(albumId, "UTF-8")
-                            navController.navigate("album/$encoded")
-                        }
+
+                        val encoded = URLEncoder.encode(albumId, "UTF-8")
+                        navController.navigate("more/offline_album/$encoded")
                     },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = "more/offline_album/{albumId}",
+                arguments = listOf(navArgument("albumId") { type = NavType.StringType }),
+            ) { entry ->
+                val encoded = entry.arguments?.getString("albumId").orEmpty()
+                OfflineAlbumDetailScreen(
+                    albumId = URLDecoder.decode(encoded, "UTF-8"),
+                    onTrackClick = onTrackClick,
                     onBack = { navController.popBackStack() },
                 )
             }
         }
 
-        // Сплошной фон под мини-плеером и таббаром — контент сверху до него не доходит.
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()

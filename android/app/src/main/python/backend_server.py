@@ -1,18 +1,4 @@
-"""
-Встроенный бэкенд, работающий ПРЯМО НА ТЕЛЕФОНЕ через Chaquopy.
 
-Это функциональный аналог backend/main.py (который остаётся в репозитории
-для запуска на ПК/сервере, если он вам понадобится отдельно), но переписанный
-на стандартной библиотеке (http.server) вместо FastAPI/uvicorn/pydantic —
-это снижает риск проблем совместимости пакетов при сборке под Android.
-
-Слушает только 127.0.0.1 (localhost телефона) — наружу из телефона порт
-не торчит, приложение обращается к нему как к обычному HTTP API.
-
-Запускается не напрямую, а через Kotlin: см.
-android/.../backend/LocalBackend.kt, который вызывает start(port) в фоновом
-потоке при старте приложения (Application.onCreate).
-"""
 
 from __future__ import annotations
 
@@ -26,14 +12,8 @@ from urllib.parse import parse_qs, urlparse
 import yt_dlp
 from ytmusicapi import YTMusic, setup
 
-# --------------------------------------------------------------------------- #
-# YTMusic — ленивая инициализация + browser auth для лайков/библиотеки
-# --------------------------------------------------------------------------- #
-
-
-
 def _android_files_dir() -> str:
-    """Каталог files/ приложения — auth-файл переживает перезапуск процесса."""
+
     try:
         from com.chaquo.python import Python
         ctx = Python.getPlatform().getApplication()
@@ -42,15 +22,12 @@ def _android_files_dir() -> str:
         import tempfile
         return tempfile.gettempdir()
 
-
 def _auth_file_default() -> str:
     import os
     return os.path.join(_android_files_dir(), "ytm_browser_auth.json")
 
-
 def _extract_sapisid(cookie: str) -> str:
-    """Достаём __Secure-3PAPISID или SAPISID из cookie-строки."""
-    # SimpleCookie иногда ломается на значениях с запятыми — парсим вручную.
+
     found: dict[str, str] = {}
     for part in cookie.split(";"):
         part = part.strip()
@@ -58,21 +35,20 @@ def _extract_sapisid(cookie: str) -> str:
             continue
         k, v = part.split("=", 1)
         found[k.strip()] = v.strip()
-    for name in ("__Secure-3PAPISID", "SAPISID"):
+
+    for name in ("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"):
         if name in found and found[name]:
             return found[name]
     raise ValueError(
-        "В Cookie нет __Secure-3PAPISID/SAPISID. "
+        "В Cookie нет SAPISID/__Secure-3PAPISID. "
         "Нужна полная сессия YouTube (не гость)."
     )
 
-
 _yt_lock = threading.Lock()
 _yt_instance: YTMusic | None = None
-_auth_json: str | None = None  # JSON browser headers (для ответа клиенту)
-_auth_file_path: str | None = None  # путь к файлу auth для YTMusic()
+_auth_json: str | None = None
+_auth_file_path: str | None = None
 _auth_account_hint: str | None = None
-
 
 def _get_yt() -> YTMusic:
     global _yt_instance, _auth_file_path
@@ -90,7 +66,7 @@ def _get_yt() -> YTMusic:
                     print(f"[ytm-backend] auth YTMusic(file) failed, fallback anonymous: {exc!r}")
                     _yt_instance = YTMusic()
             elif _auth_json:
-                # Legacy: только если файл ещё не записан — через tempfile.
+
                 import os
                 import tempfile
                 try:
@@ -106,29 +82,26 @@ def _get_yt() -> YTMusic:
                 _yt_instance = YTMusic()
         return _yt_instance
 
-
 def _reset_yt() -> None:
-    """Сбросить клиент после смены/сброса auth."""
+
     global _yt_instance
     with _yt_lock:
         _yt_instance = None
 
-
 def _parse_headers_raw(raw: str) -> dict:
-    """Превращает текст Request Headers из DevTools или JSON в dict для YTMusic."""
+
     raw = (raw or "").strip()
     if not raw:
         raise ValueError("empty headers")
 
     raw = raw.strip()
-    # Уже JSON (файл browser.json / headers_auth.json)
+
     if raw.startswith("{"):
         data = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError("auth JSON must be an object")
         return data
 
-    # Формат DevTools: "Name: value" по строкам
     headers: dict[str, str] = {}
     for line in raw.splitlines():
         line = line.strip()
@@ -141,7 +114,7 @@ def _parse_headers_raw(raw: str) -> dict:
         value = value.strip()
         if not key:
             continue
-        # Нормализуем известные ключи
+
         lk = key.lower()
         if lk == "cookie":
             headers["Cookie"] = value
@@ -163,7 +136,7 @@ def _parse_headers_raw(raw: str) -> dict:
             headers[key] = value
 
     if "Cookie" not in headers and "cookie" not in {k.lower() for k in headers}:
-        # Возможно пришла голая cookie-строка без префикса "Cookie:"
+
         if "SID=" in raw or "SAPISID=" in raw or "__Secure-3PSID=" in raw:
             headers["Cookie"] = raw.strip()
         else:
@@ -177,18 +150,8 @@ def _parse_headers_raw(raw: str) -> dict:
     headers.setdefault("x-origin", "https://music.youtube.com")
     return headers
 
-
 def _set_auth_from_raw(raw: str) -> dict:
-    """Browser-auth для ytmusicapi 1.11+.
 
-    Критично: determine_auth_type() по умолчанию возвращает OAUTH_CUSTOM_CLIENT.
-    Тип BROWSER выставляется ТОЛЬКО если в headers есть Authorization
-    со строкой SAPISIDHASH. Без этого YTMusic() падает с
-    "oauth JSON provided... oauth_credentials not provided".
-
-    Поэтому из Cookie достаём SAPISID / __Secure-3PAPISID, собираем
-    Authorization через get_authorization() и пишем browser.json на диск.
-    """
     global _auth_json, _auth_account_hint, _auth_file_path
     import os
     import tempfile
@@ -197,7 +160,6 @@ def _set_auth_from_raw(raw: str) -> dict:
     if not raw:
         raise ValueError("empty headers")
 
-    # 1) Получаем dict headers
     headers: dict
     if raw.startswith("{"):
         parsed = json.loads(raw)
@@ -210,7 +172,7 @@ def _set_auth_from_raw(raw: str) -> dict:
         headers = {str(k): str(v) for k, v in parsed.items()}
     else:
         try:
-            # setup() из ytmusicapi умеет DevTools-текст
+
             setup_out = setup(headers_raw=raw)
             headers = json.loads(setup_out) if isinstance(setup_out, str) else dict(setup_out)
             headers = {str(k): str(v) for k, v in headers.items()}
@@ -218,7 +180,6 @@ def _set_auth_from_raw(raw: str) -> dict:
             print(f"[ytm-backend] setup() failed ({exc!r}), using local parser")
             headers = {str(k): str(v) for k, v in _parse_headers_raw(raw).items()}
 
-    # Case-insensitive lookup
     def _get(h: dict, *names: str) -> str | None:
         lower = {k.lower(): v for k, v in h.items()}
         for n in names:
@@ -230,14 +191,12 @@ def _set_auth_from_raw(raw: str) -> dict:
     if not cookie:
         raise ValueError("В заголовках нет Cookie")
 
-    # Нужен SAPISID / __Secure-3PAPISID в cookie
-    if "SAPISID=" not in cookie and "__Secure-3PAPISID=" not in cookie:
+    if "SAPISID=" not in cookie and "__Secure-3PAPISID=" not in cookie and "__Secure-1PAPISID=" not in cookie:
         raise ValueError(
             "В Cookie нет SAPISID/__Secure-3PAPISID — войдите в аккаунт на music.youtube.com "
-            "и скопируйте headers заново (нужна полная сессия, не гость)."
+            "и дождитесь загрузки страницы (или вставьте headers из Chrome на ПК)."
         )
 
-    # Обязательные browser-поля
     headers.setdefault("Accept", "*/*")
     headers.setdefault("Content-Type", "application/json")
     headers.setdefault("X-Goog-AuthUser", "0")
@@ -247,7 +206,7 @@ def _set_auth_from_raw(raw: str) -> dict:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-    # Нормализуем ключ Cookie
+
     for k in list(headers.keys()):
         if k.lower() == "cookie" and k != "Cookie":
             headers["Cookie"] = headers.pop(k)
@@ -255,7 +214,6 @@ def _set_auth_from_raw(raw: str) -> dict:
     else:
         headers["Cookie"] = cookie
 
-    # 2) Authorization с SAPISIDHASH — иначе auth_type = OAUTH
     origin = _get(headers, "x-origin", "origin") or "https://music.youtube.com"
     from ytmusicapi.helpers import get_authorization
     sapisid = _extract_sapisid(cookie)
@@ -263,60 +221,97 @@ def _set_auth_from_raw(raw: str) -> dict:
     headers["Authorization"] = auth_header
     print(f"[ytm-backend] Authorization generated, sapisid_prefix={sapisid[:8]}...")
 
-    # Убедимся, что ключ Authorization с большой буквы (CaseInsensitiveDict ок, но файл читаемее)
     for k in list(headers.keys()):
         if k.lower() == "authorization" and k != "Authorization":
             headers["Authorization"] = headers.pop(k)
+        if k.lower() == "x-goog-authuser" and k != "X-Goog-AuthUser":
+            headers["X-Goog-AuthUser"] = headers.pop(k)
 
-    auth_str = json.dumps(headers, ensure_ascii=False)
-    print(f"[ytm-backend] browser auth keys={sorted(headers.keys())}")
-
-    # 3) Файл в files/ приложения → YTMusic(path)
     path = _auth_file_default()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(auth_str)
-    print(f"[ytm-backend] auth written to {path}")
 
-    try:
-        test = YTMusic(path)
-    except Exception as exc:
-        print(f"[ytm-backend] YTMusic(path) failed: {exc!r}")
-        raise ValueError(f"YTMusic auth init failed: {exc}") from exc
+    def _write_and_open(authuser: str):
+        headers["X-Goog-AuthUser"] = str(authuser)
 
-    # Жёсткая проверка: YouTube должен отдать лайки, а не экран Sign in.
-    try:
-        liked = test.get_liked_songs(limit=1)
-    except Exception as exc:
-        print(f"[ytm-backend] liked check failed: {exc!r}")
-        msg = str(exc)
-        if "Sign in" in msg or "Looking for what you" in msg or "messageRenderer" in msg:
-            raise ValueError(
-                "YouTube не принял сессию (ответ Sign in). "
-                "Скопируйте Request Headers из Chrome на ПК: "
-                "music.youtube.com → F12 → Network → browse → Request Headers "
-                "(нужны Cookie с __Secure-3PAPISID и Authorization)."
-            ) from exc
+        headers["Authorization"] = get_authorization(f"{sapisid} {origin}")
+        auth_str_local = json.dumps(headers, ensure_ascii=False)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(auth_str_local)
+        return auth_str_local, YTMusic(path)
+
+    def _session_works(yt: "YTMusic") -> tuple[bool, str]:
+
+        last_err = ""
+        signs_of_guest = ("Sign in", "Looking for what you", "messageRenderer")
+
+        try:
+            liked = yt.get_liked_songs(limit=1)
+            if isinstance(liked, dict) and "tracks" in liked:
+                n = len(liked.get("tracks") or [])
+                return True, f"Лайки OK ({n}+)"
+            last_err = f"liked unexpected: {type(liked).__name__}"
+        except Exception as exc:
+            last_err = str(exc)
+            print(f"[ytm-backend] liked check: {exc!r}")
+            if any(s in last_err for s in signs_of_guest):
+                return False, last_err
+
+        try:
+            pls = yt.get_library_playlists(limit=5)
+            if isinstance(pls, list) and len(pls) > 0:
+                return True, f"Плейлисты OK ({len(pls)})"
+
+            if isinstance(pls, list) and last_err == "":
+
+                pass
+        except Exception as exc:
+            last_err = str(exc)
+            print(f"[ytm-backend] library playlists check: {exc!r}")
+            if any(s in last_err for s in signs_of_guest):
+                return False, last_err
+
+        try:
+            hist = yt.get_history()
+            if isinstance(hist, list) and len(hist) > 0:
+                return True, f"История OK ({len(hist)})"
+        except Exception as exc:
+            last_err = str(exc)
+            print(f"[ytm-backend] history check: {exc!r}")
+
+        return False, last_err or "нет подтверждения авторизованной сессии"
+
+    preferred = str(_get(headers, "X-Goog-AuthUser", "x-goog-authuser") or "0")
+    authuser_order = [preferred] + [str(i) for i in range(5) if str(i) != preferred]
+
+    last_detail = ""
+    auth_str = ""
+    for au in authuser_order:
+        try:
+            auth_str, test = _write_and_open(au)
+            print(f"[ytm-backend] trying authuser={au} keys={sorted(headers.keys())}")
+            ok, detail = _session_works(test)
+            if ok:
+                _auth_account_hint = "Signed in"
+                _auth_json = auth_str
+                _auth_file_path = path
+                _reset_yt()
+                return {"ok": True, "accountName": _auth_account_hint, "authJson": auth_str}
+            last_detail = detail
+        except Exception as exc:
+            last_detail = str(exc)
+            print(f"[ytm-backend] authuser={au} failed: {exc!r}")
+
+    msg = last_detail or "unknown"
+    if "Sign in" in msg or "Looking for what you" in msg or "messageRenderer" in msg:
         raise ValueError(
-            "Сессия не работает для лайков. Проверьте Cookie/Authorization. "
-            f"Деталь: {type(exc).__name__}: {msg[:180]}"
-        ) from exc
-
-    if not isinstance(liked, dict) or "tracks" not in liked:
-        raise ValueError(
-            "YouTube вернул неожиданный ответ вместо списка лайков. "
-            "Сессия, скорее всего, гостевая — войдите через headers из Chrome."
+            "YouTube не принял сессию (ответ Sign in). "
+            "WebView-cookies часто недостаточны. Надёжный способ: "
+            "на ПК Chrome → music.youtube.com → F12 → Network → browse → "
+            "Copy request headers → в приложении «Sign in with headers»."
         )
-
-    tracks = liked.get("tracks") or []
-    count_hint = len(tracks)
-    _auth_account_hint = f"Лайки доступны (проверка: {count_hint}+)"
-
-    _auth_json = auth_str
-    _auth_file_path = path
-    _reset_yt()
-    return {"ok": True, "accountName": _auth_account_hint, "authJson": auth_str}
-
-
+    raise ValueError(
+        "Сессия не принята YouTube. "
+        f"Деталь: {msg[:200]}"
+    )
 
 def _clear_auth() -> None:
     global _auth_json, _auth_account_hint, _auth_file_path
@@ -331,23 +326,8 @@ def _clear_auth() -> None:
     _auth_file_path = None
     _reset_yt()
 
-
-# --------------------------------------------------------------------------- #
-# Вспомогательное — те же преобразования, что и в backend/main.py
-# --------------------------------------------------------------------------- #
-
-# БАГ, который здесь был: код брал thumbnails[-1] и считал, что это
-# "самая большая" картинка — по факту это просто последний элемент списка,
-# который для многих карточек (особенно у артистов и в некоторых ответах
-# поиска) содержит превью всего 60x60/120x120 — именно столько отдаёт
-# конкретный эндпоинт YTMusic для этого типа карточки, а не потому что
-# большего не существует. Сам CDN (lh3.googleusercontent.com) отдаёт любой
-# размер по параметру в самом URL (=w..-h..-...) независимо от того, какой
-# размер пришёл в ответе API — поэтому вместо того чтобы доверять размеру
-# из ответа, принудительно переписываем его на достаточно большой.
 _THUMBNAIL_SIZE = 544
 _THUMBNAIL_SIZE_RE = re.compile(r"=w\d+-h\d+")
-
 
 def _upscale_thumbnail(url: str | None) -> str | None:
     if not url:
@@ -356,12 +336,10 @@ def _upscale_thumbnail(url: str | None) -> str | None:
         return _THUMBNAIL_SIZE_RE.sub(f"=w{_THUMBNAIL_SIZE}-h{_THUMBNAIL_SIZE}", url)
     return url
 
-
 def _pick_thumbnail(thumbnails):
     if not thumbnails:
         return None
     return _upscale_thumbnail(thumbnails[-1].get("url"))
-
 
 def _to_track(item: dict) -> dict | None:
     video_id = item.get("videoId")
@@ -389,7 +367,6 @@ def _to_track(item: dict) -> dict | None:
         "artistId": artist_id,
     }
 
-
 def _to_album(item: dict) -> dict | None:
     browse_id = item.get("browseId")
     if not browse_id:
@@ -401,7 +378,6 @@ def _to_album(item: dict) -> dict | None:
         "year": item.get("year"),
     }
 
-
 def _artist_detail(browse_id: str, fallback_name: str | None = None, fallback_thumbnail=None) -> dict | None:
     try:
         details = _get_yt().get_artist(browse_id)
@@ -411,13 +387,6 @@ def _artist_detail(browse_id: str, fallback_name: str | None = None, fallback_th
     albums_section = details.get("albums") or {}
     raw_albums = albums_section.get("results") or []
 
-    # get_artist() отдаёт только первую страницу альбомов + continuation-
-    # токен `params`, если у артиста их больше. ВАЖНО: get_artist_albums()
-    # нужно вызывать с собственным browseId секции "Альбомы"
-    # (albums_section["browseId"]), а не с browse_id самого артиста — это
-    # отдельный browse-эндпоинт ("посмотреть все альбомы"). Раньше здесь по
-    # ошибке передавался browse_id артиста, запрос падал, и ошибка тихо
-    # проглатывалась в except — поэтому оставалась только первая страница.
     params = albums_section.get("params")
     albums_browse_id = albums_section.get("browseId")
     if params and albums_browse_id:
@@ -437,8 +406,6 @@ def _artist_detail(browse_id: str, fallback_name: str | None = None, fallback_th
 
     albums = [a for a in (_to_album(i) for i in raw_albums) if a]
 
-    # Синглы / EP — отдельная секция в get_artist(). Подтягиваем так же,
-    # как альбомы (с continuation через get_artist_albums, если есть).
     singles_section = details.get("singles") or {}
     raw_singles = list(singles_section.get("results") or [])
     s_params = singles_section.get("params")
@@ -459,27 +426,50 @@ def _artist_detail(browse_id: str, fallback_name: str | None = None, fallback_th
             raw_singles = full_singles
     singles = [a for a in (_to_album(i) for i in raw_singles) if a]
 
+    songs_section = details.get("songs") or {}
+    raw_songs = list(songs_section.get("results") or [])
+    songs_browse = songs_section.get("browseId")
+    if songs_browse:
+        try:
+            pl = _get_yt().get_playlist(songs_browse, limit=None)
+            pl_tracks = pl.get("tracks") if isinstance(pl, dict) else None
+            if pl_tracks:
+                raw_songs = list(pl_tracks)
+        except TypeError:
+            try:
+                pl = _get_yt().get_playlist(songs_browse)
+                pl_tracks = pl.get("tracks") if isinstance(pl, dict) else None
+                if pl_tracks:
+                    raw_songs = list(pl_tracks)
+            except Exception as exc:
+                print(f"[ytm-backend] get_playlist songs fallback: {exc!r}")
+        except Exception as exc:
+            print(f"[ytm-backend] get_playlist songs fallback: {exc!r}")
+
+    seen_vids = set()
+    songs = []
+    for i in raw_songs:
+        t = _to_track(i)
+        if not t:
+            continue
+        vid = t.get("videoId")
+        if not vid or vid in seen_vids:
+            continue
+        seen_vids.add(vid)
+        songs.append(t)
+
     return {
         "artistId": browse_id,
         "name": details.get("name") or fallback_name or "Unknown",
         "thumbnail": _upscale_thumbnail(fallback_thumbnail) or _pick_thumbnail(details.get("thumbnails")),
         "albums": albums,
         "singles": singles,
+        "songs": songs,
     }
 
-
-# БАГ, который здесь был: раньше эта функция кэшировалась через
-# @lru_cache(maxsize=256) без TTL. Ссылки на аудиопоток от YouTube —
-# подписанные и живут ограниченное время (обычно несколько часов), после
-# чего сервер начинает отвечать на них ошибкой, и трек перестаёт грузиться.
-# lru_cache этого не знал и продолжал отдавать один и тот же протухший URL
-# до перезапуска приложения. Решение — кэш с TTL: срок годности берём из
-# параметра `expire` в самом URL (с небольшим запасом), а как истёк —
-# извлекаем ссылку заново.
 _STREAM_CACHE_SAFETY_SECONDS = 300
 _stream_cache: dict[str, tuple[float, dict]] = {}
 _stream_cache_lock = threading.Lock()
-
 
 def _stream_expiry(stream_url: str) -> float:
     try:
@@ -490,7 +480,6 @@ def _stream_expiry(stream_url: str) -> float:
         pass
     return time.time() + 3600
 
-
 def _extract_stream(video_id: str) -> dict:
     with _stream_cache_lock:
         cached = _stream_cache.get(video_id)
@@ -500,7 +489,7 @@ def _extract_stream(video_id: str) -> dict:
                 return cached_result
 
     ydl_opts = {
-        # progressive audio preferred (easier to download fully)
+
         "format": "bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best",
         "quiet": True,
         "no_warnings": True,
@@ -522,12 +511,6 @@ def _extract_stream(video_id: str) -> dict:
         fmt = max(audio_formats, key=lambda f: f.get("abr") or 0)
         stream_url = fmt["url"]
 
-    # БАГ (обрыв воспроизведения через ~15 секунд): googlevideo-ссылка от
-    # yt-dlp подписана с привязкой к заголовкам запроса (в первую очередь
-    # User-Agent). Если клиент запрашивает поток с другими заголовками,
-    # YouTube не блокирует запрос сразу, а начинает жёстко троттлить
-    # соединение через несколько секунд после старта — так и выглядит как
-    # "трек обрывается". Прокидываем клиенту точные заголовки yt-dlp.
     http_headers = dict(fmt.get("http_headers") or info.get("http_headers") or {})
 
     result = {
@@ -541,14 +524,8 @@ def _extract_stream(video_id: str) -> dict:
         _stream_cache[video_id] = (_stream_expiry(stream_url), result)
     return result
 
-
-# --------------------------------------------------------------------------- #
-# HTTP-обработчик
-# --------------------------------------------------------------------------- #
-
-
 def _download_audio_file(video_id: str) -> tuple[str, str, str]:
-    """Скачивает аудио на диск. Сначала yt-dlp, при ошибке — stream URL + requests."""
+
     import os
     import shutil
 
@@ -561,7 +538,6 @@ def _download_audio_file(video_id: str) -> tuple[str, str, str]:
     outtmpl = os.path.join(work, f"{video_id}.%(ext)s")
     last_err: Exception | None = None
 
-    # --- попытка 1: yt-dlp пишет файл сам ---
     try:
         ydl_opts = {
             "format": "bestaudio/best",
@@ -571,7 +547,7 @@ def _download_audio_file(video_id: str) -> tuple[str, str, str]:
             "noplaylist": True,
             "noprogress": True,
             "restrictfilenames": True,
-            # android-клиент часто стабильнее на телефоне
+
             "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -602,7 +578,6 @@ def _download_audio_file(video_id: str) -> tuple[str, str, str]:
         last_err = exc
         print(f"[ytm-backend] yt-dlp download failed: {exc!r}, try stream fallback")
 
-    # --- попытка 2: взять signed URL и скачать requests-ом ---
     try:
         stream = _extract_stream(video_id)
         stream_url = stream["streamUrl"]
@@ -614,7 +589,7 @@ def _download_audio_file(video_id: str) -> tuple[str, str, str]:
             )
         ext = (stream.get("mimeType") or "m4a").split(";")[0].strip().lower()
         if "/" in ext:
-            # mime like audio/mp4
+
             ext = "m4a" if "mp4" in ext else ("webm" if "webm" in ext else "m4a")
         filepath = os.path.join(work, f"{video_id}.{ext}")
         import urllib.request
@@ -641,7 +616,6 @@ def _download_audio_file(video_id: str) -> tuple[str, str, str]:
             f"download failed (yt-dlp: {last_err}; stream: {exc2})"
         ) from exc2
 
-
 def _to_playlist(item: dict) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -663,13 +637,11 @@ def _to_playlist(item: dict) -> dict | None:
         "count": count_i,
     }
 
-
-
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002
-        pass  # не засоряем logcat стандартными access-логами
+    def log_message(self, format: str, *args) -> None:
+        pass
 
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -682,7 +654,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json(status, {"detail": message})
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -693,7 +665,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/search/artists":
-                # Поиск отдаёт карточки артистов (не треков).
+
                 q = (qs.get("q") or [""])[0]
                 if not q:
                     self._send_error_json(400, "q is required")
@@ -720,8 +692,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             if path.startswith("/artists/"):
-                # Полная карточка артиста с альбомами — подгружается по тапу
-                # на карточку из результатов поиска.
+
                 artist_id = path[len("/artists/"):]
                 if not artist_id:
                     self._send_error_json(400, "artistId is required")
@@ -748,12 +719,18 @@ class _Handler(BaseHTTPRequestHandler):
                 album_title = album.get("title", "Unknown")
 
                 tracks = []
-                for item in album.get("tracks", []):
+                seen_album_vids = set()
+                for item in album.get("tracks", []) or []:
+                    if not isinstance(item, dict):
+                        continue
                     track = _to_track(item)
                     if not track:
                         continue
-                    # Треки внутри альбома обычно не несут собственную
-                    # обложку/название альбома — подставляем с уровня альбома.
+                    vid = track.get("videoId")
+                    if not vid or vid in seen_album_vids:
+                        continue
+                    seen_album_vids.add(vid)
+
                     if track.get("thumbnail") is None:
                         track["thumbnail"] = album_thumbnail
                     if track.get("album") is None:
@@ -805,8 +782,115 @@ class _Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if path == "/lyrics":
+
+                qs = parse_qs(parsed.query)
+                title = (qs.get("title") or [""])[0].strip()
+                artist = (qs.get("artist") or [""])[0].strip()
+                album = (qs.get("album") or [""])[0].strip()
+                try:
+                    duration = int(float((qs.get("duration") or ["0"])[0]))
+                except Exception:
+                    duration = 0
+                if not title:
+                    self._send_error_json(400, "title required")
+                    return
+                try:
+                    import urllib.request
+                    import urllib.parse
+
+                    def _get(url: str) -> str | None:
+                        req = urllib.request.Request(
+                            url,
+                            headers={
+                                "User-Agent": "GammaTunes/0.3 (Android; lrclib)",
+                                "Accept": "application/json",
+                            },
+                        )
+                        with urllib.request.urlopen(req, timeout=12) as resp:
+                            return resp.read().decode("utf-8", errors="replace")
+
+                    def _enc(s: str) -> str:
+                        return urllib.parse.quote(s or "")
+
+                    candidates = []
+                    if artist:
+                        if duration > 0:
+                            candidates.append(
+                                f"https://lrclib.net/api/get?artist_name={_enc(artist)}"
+                                f"&track_name={_enc(title)}&album_name={_enc(album)}&duration={duration}"
+                            )
+                        candidates.append(
+                            f"https://lrclib.net/api/search?artist_name={_enc(artist)}&track_name={_enc(title)}"
+                        )
+                    candidates.append(f"https://lrclib.net/api/search?q={_enc((artist + ' ' + title).strip())}")
+                    candidates.append(f"https://lrclib.net/api/search?track_name={_enc(title)}")
+
+                    best_synced = None
+                    best_plain = None
+                    best_dur_diff = 10**9
+
+                    for url in candidates:
+                        try:
+                            body = _get(url)
+                        except Exception as exc:
+                            print(f"[ytm-backend] lyrics fetch {url}: {exc!r}")
+                            continue
+                        if not body:
+                            continue
+                        body = body.strip()
+                        items = []
+                        try:
+                            if body.startswith("["):
+                                items = json.loads(body)
+                            else:
+                                items = [json.loads(body)]
+                        except Exception:
+                            continue
+                        if not isinstance(items, list):
+                            continue
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            synced = it.get("syncedLyrics") or ""
+                            plain = it.get("plainLyrics") or ""
+                            d = it.get("duration") or 0
+                            try:
+                                d = float(d)
+                            except Exception:
+                                d = 0
+                            diff = abs(d - duration) if duration > 0 and d > 0 else 9999
+                            if synced and (best_synced is None or diff < best_dur_diff):
+                                best_synced = synced
+                                best_dur_diff = diff
+                            if plain and best_plain is None:
+                                best_plain = plain
+
+                    if best_synced:
+                        self._send_json(200, {
+                            "ok": True,
+                            "synced": True,
+                            "source": "lrclib",
+                            "lrc": best_synced,
+                        })
+                        return
+                    if best_plain:
+                        self._send_json(200, {
+                            "ok": True,
+                            "synced": False,
+                            "source": "lrclib",
+                            "plain": best_plain,
+                        })
+                        return
+                    self._send_json(404, {"ok": False, "error": "No lyrics found"})
+                except Exception as exc:
+                    import traceback
+                    print(f"[ytm-backend] /lyrics failed:\n{traceback.format_exc()}")
+                    self._send_error_json(502, f"lyrics failed: {exc}")
+                return
+
             if path == "/liked":
-                if _auth_json is None:
+                if _auth_json is None and not _auth_file_path:
                     self._send_error_json(401, "Not authenticated")
                     return
                 limit = int((qs.get("limit") or ["100"])[0])
@@ -824,7 +908,6 @@ class _Handler(BaseHTTPRequestHandler):
                             "(Cookie с __Secure-3PAPISID).",
                         )
                     else:
-                        # Не тащим весь dict в UI — обрезаем
                         short = msg.replace("\n", " ")[:220]
                         self._send_error_json(
                             502,
@@ -836,14 +919,65 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"results": tracks})
                 return
 
+            if path == "/playlists":
+                if _auth_json is None and not _auth_file_path:
+                    self._send_error_json(401, "Not authenticated")
+                    return
+                limit = 50
+                try:
+                    if "limit" in qs:
+                        limit = max(1, min(100, int(qs["limit"][0])))
+                except Exception:
+                    pass
+                try:
+                    raw = _get_yt().get_library_playlists(limit=limit)
+                except Exception as exc:
+                    print(f"[ytm-backend] get_library_playlists failed: {exc!r}")
+                    self._send_error_json(502, f"get_library_playlists failed: {exc}")
+                    return
+                items = raw if isinstance(raw, list) else (raw.get("results") or raw.get("playlists") or [])
+                playlists = [p for p in (_to_playlist(i) for i in items) if p]
+                self._send_json(200, {"playlists": playlists})
+                return
+
+            if path.startswith("/playlists/"):
+                if _auth_json is None and not _auth_file_path:
+                    self._send_error_json(401, "Not authenticated")
+                    return
+                playlist_id = path[len("/playlists/"):]
+                if not playlist_id or playlist_id == "add":
+                    self._send_error_json(400, "playlistId required")
+                    return
+                limit = 100
+                try:
+                    if "limit" in qs:
+                        limit = max(1, min(500, int(qs["limit"][0])))
+                except Exception:
+                    pass
+                try:
+                    data = _get_yt().get_playlist(playlist_id, limit=limit)
+                except Exception as exc:
+                    print(f"[ytm-backend] get_playlist failed: {exc!r}")
+                    self._send_error_json(502, f"get_playlist failed: {exc}")
+                    return
+                tracks_raw = data.get("tracks") if isinstance(data, dict) else []
+                tracks = [t for t in (_to_track(i) for i in (tracks_raw or [])) if t]
+                title = (data.get("title") if isinstance(data, dict) else None) or playlist_id
+                self._send_json(200, {
+                    "playlistId": playlist_id,
+                    "title": title,
+                    "tracks": tracks,
+                })
+                return
+
             self._send_error_json(404, "Not found")
-        except Exception as exc:  # страховка — сервер не должен падать целиком
+        except Exception as exc:
             try:
                 self._send_error_json(500, str(exc))
             except Exception:
                 pass
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         try:
@@ -960,7 +1094,7 @@ class _Handler(BaseHTTPRequestHandler):
                     or payload.get("authJson")
                     or ""
                 )
-                # Иногда клиент шлёт уже готовый dict headers
+
                 if not raw and isinstance(payload.get("cookie"), str):
                     raw = "Cookie: " + payload["cookie"]
                 if not raw:
@@ -1004,6 +1138,36 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_error_json(502, f"rate_song failed: {exc}")
                 return
 
+            if path == "/playlists/add":
+                if _auth_json is None:
+                    self._send_error_json(401, "Not authenticated")
+                    return
+                playlist_id = payload.get("playlistId") or ""
+                video_id = payload.get("videoId") or ""
+                if not playlist_id or not video_id:
+                    self._send_error_json(400, "playlistId and videoId are required")
+                    return
+                try:
+                    _get_yt().add_playlist_items(playlist_id, [video_id], duplicates=False)
+                    self._send_json(200, {
+                        "ok": True,
+                        "playlistId": playlist_id,
+                        "videoId": video_id,
+                    })
+                except TypeError:
+                    try:
+                        _get_yt().add_playlist_items(playlist_id, [video_id])
+                        self._send_json(200, {
+                            "ok": True,
+                            "playlistId": playlist_id,
+                            "videoId": video_id,
+                        })
+                    except Exception as exc:
+                        self._send_error_json(502, f"add_playlist_items failed: {exc}")
+                except Exception as exc:
+                    self._send_error_json(502, f"add_playlist_items failed: {exc}")
+                return
+
             self._send_error_json(404, "Not found")
         except Exception as exc:
             try:
@@ -1011,21 +1175,11 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-
-# --------------------------------------------------------------------------- #
-# Запуск
-# --------------------------------------------------------------------------- #
-
 _server: ThreadingHTTPServer | None = None
 _server_lock = threading.Lock()
 
-
 def start(port: int = 8765) -> None:
-    """
-    Запускает сервер и блокирует текущий поток (serve_forever).
-    Вызывать из фонового потока со стороны Kotlin, не из UI-потока.
-    Повторный вызов безопасен — если сервер уже поднят, просто выходит.
-    """
+
     global _server
     with _server_lock:
         if _server is not None:

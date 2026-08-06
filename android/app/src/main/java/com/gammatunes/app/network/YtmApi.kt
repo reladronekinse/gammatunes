@@ -8,6 +8,7 @@ import com.gammatunes.app.model.AuthStatusResponse
 import com.gammatunes.app.model.PlaylistTracksResponse
 import com.gammatunes.app.model.PlaylistsResponse
 import com.gammatunes.app.model.SearchResponse
+import com.gammatunes.app.model.LyricsApiResponse
 import com.gammatunes.app.model.SimpleOkResponse
 import com.gammatunes.app.model.StreamResponse
 import retrofit2.http.Body
@@ -56,7 +57,21 @@ interface YtmApi {
 
     @POST("rate")
     suspend fun rateSongBody(@Body body: Map<String, String>): SimpleOkResponse
+
+    @POST("playlists/add")
+    suspend fun addToPlaylistBody(@Body body: Map<String, String>): SimpleOkResponse
+
+    @GET("lyrics")
+    suspend fun lyrics(
+        @Query("title") title: String,
+        @Query("artist") artist: String,
+        @Query("album") album: String = "",
+        @Query("duration") duration: Int = 0,
+    ): LyricsApiResponse
 }
 
 suspend fun YtmApi.rateSong(videoId: String, rating: String): SimpleOkResponse =
     rateSongBody(mapOf("videoId" to videoId, "rating" to rating))
+
+suspend fun YtmApi.addToPlaylist(playlistId: String, videoId: String): SimpleOkResponse =
+    addToPlaylistBody(mapOf("playlistId" to playlistId, "videoId" to videoId))

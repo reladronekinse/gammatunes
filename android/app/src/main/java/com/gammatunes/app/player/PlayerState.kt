@@ -30,13 +30,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/** Режим повтора: выключен / повторять всю очередь / зациклить один трек. */
 enum class RepeatMode { OFF, ALL, ONE }
 
-/**
- * UI-состояние плеера. ExoPlayer живёт в [PlaybackService].
- * MediaController подключается к сессии — без него уведомление часто не появляется.
- */
 @UnstableApi
 class PlayerState(private val context: Context, private val scope: CoroutineScope) {
 
@@ -72,11 +67,11 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
     val hasPrevious: Boolean
         get() = queueIndex > 0 && queue.isNotEmpty()
 
-    /** Текущая позиция воспроизведения (мс). 0 если плеер ещё не привязан. */
+
     val positionMs: Long
         get() = boundPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L
 
-    /** Длительность текущего трека (мс). 0 если неизвестна. */
+
     val durationMs: Long
         get() {
             val d = boundPlayer?.duration ?: 0L
@@ -137,7 +132,9 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
                                 playNext()
                             } else if (queue.isNotEmpty()) {
                                 queueIndex = 0
-                                loadAndPlay(queue[queueIndex])
+                                val t = queue[queueIndex]
+                                PlayHistoryRepository.record(t)
+                                loadAndPlay(t)
                             }
                         }
                         RepeatMode.OFF -> playNext()
@@ -166,6 +163,7 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         this.queueIndex = queue.indexOfFirst { it.videoId == track.videoId }.let {
             if (it >= 0) it else 0
         }
+        PlayHistoryRepository.record(track)
         if (track.videoId == currentTrack?.videoId) {
             togglePlayPause()
             return
@@ -176,13 +174,17 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
     fun playNext() {
         if (!hasNext) return
         queueIndex++
-        loadAndPlay(queue[queueIndex])
+        val t = queue[queueIndex]
+        PlayHistoryRepository.record(t)
+        loadAndPlay(t)
     }
 
     fun playPrevious() {
         if (!hasPrevious) return
         queueIndex--
-        loadAndPlay(queue[queueIndex])
+        val t = queue[queueIndex]
+        PlayHistoryRepository.record(t)
+        loadAndPlay(t)
     }
 
     private var retryAttempted = false

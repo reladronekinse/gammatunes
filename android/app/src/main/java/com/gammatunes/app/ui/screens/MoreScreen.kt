@@ -26,9 +26,6 @@ import com.gammatunes.app.ui.i18n.LocaleRepository
 import com.gammatunes.app.ui.i18n.AppLanguage
 import androidx.compose.ui.platform.LocalContext
 
-/**
- * Хаб «Прочее»: разделы ведут на отдельные экраны.
- */
 @Composable
 fun MoreScreen(
     onOpenAccount: () -> Unit,
@@ -40,7 +37,6 @@ fun MoreScreen(
     val context = LocalContext.current
     val language by LocaleRepository.language.collectAsState()
     val isLoggedIn by AuthRepository.isLoggedIn.collectAsState()
-    val accountHint by AuthRepository.accountHint.collectAsState()
     val offlineIndex by OfflineRepository.index.collectAsState()
     val offlineAlbums by OfflineRepository.albums.collectAsState()
 
@@ -58,7 +54,7 @@ fun MoreScreen(
             )
         }
 
-        // --- Вход ---
+
         item {
             SectionTitle(strings.accountSection)
         }
@@ -66,16 +62,12 @@ fun MoreScreen(
             MoreNavRow(
                 icon = Icons.Default.AccountCircle,
                 title = strings.accountSection,
-                subtitle = if (isLoggedIn) {
-                    accountHint?.takeIf { it.isNotBlank() } ?: strings.loggedIn
-                } else {
-                    strings.guest
-                },
+                subtitle = if (isLoggedIn) strings.loggedIn else strings.guest,
                 onClick = onOpenAccount,
             )
         }
 
-        // --- Скачанное ---
+
         item {
             SectionTitle(strings.offlineSection)
         }
@@ -96,7 +88,7 @@ fun MoreScreen(
             )
         }
 
-        // --- Кастомизация ---
+
         item {
             SectionTitle(strings.uiSettingsSection)
         }
@@ -109,7 +101,7 @@ fun MoreScreen(
             )
         }
 
-        // --- Язык ---
+
         item {
             SectionTitle(strings.languageSection)
         }
@@ -142,7 +134,7 @@ fun MoreScreen(
             }
         }
 
-        // --- О приложении ---
+
         item {
             SectionTitle(strings.aboutSection)
         }
@@ -158,7 +150,7 @@ fun MoreScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = strings.versionLabel.format("0.2-unstable"),
+                        text = strings.versionLabel.format("0.3-stable"),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

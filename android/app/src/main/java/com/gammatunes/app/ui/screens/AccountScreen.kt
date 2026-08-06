@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import com.gammatunes.app.auth.AuthRepository
 import com.gammatunes.app.model.Track
 import com.gammatunes.app.network.ApiClient
+import com.gammatunes.app.ui.components.BrowserLoginDialog
 import com.gammatunes.app.ui.components.LiquidGlassSurface
 import com.gammatunes.app.ui.i18n.LocalStrings
 import kotlinx.coroutines.launch
@@ -41,6 +42,8 @@ fun AccountScreen(
 
     var headersText by remember { mutableStateOf("") }
     var showLoginField by remember { mutableStateOf(false) }
+    var showBrowserLogin by remember { mutableStateOf(false) }
+    var expandedLiked by remember { mutableStateOf(false) }
     var expandedPlaylistId by remember { mutableStateOf<String?>(null) }
     var expandedPlaylistTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     var playlistLoading by remember { mutableStateOf(false) }
@@ -83,37 +86,45 @@ fun AccountScreen(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Text(
-                            text = if (isLoggedIn) {
-                                accountHint?.takeIf { it.isNotBlank() } ?: strings.loggedIn
-                            } else {
-                                strings.guest
-                            },
+                            text = if (isLoggedIn) strings.loggedIn else strings.guest,
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                         )
-                        if (!statusMessage.isNullOrBlank()) {
+
+                        val err = statusMessage.orEmpty()
+                        val looksLikeError = err.isNotBlank() && (
+                            !isLoggedIn ||
+                                "fail" in err.lowercase() ||
+                                "error" in err.lowercase() ||
+                                "не " in err.lowercase() ||
+                                "ошиб" in err.lowercase() ||
+                                "denied" in err.lowercase() ||
+                                "устарел" in err.lowercase()
+                            )
+                        if (looksLikeError) {
                             Text(
-                                text = statusMessage.orEmpty(),
+                                text = err,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = MaterialTheme.colorScheme.error,
                             )
                         }
-                        Text(
-                            text = strings.loginHelp,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
 
                         if (!isLoggedIn) {
-                            if (!showLoginField) {
-                                Button(
-                                    onClick = { showLoginField = true },
-                                    enabled = !isBusy,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text(strings.loginWithHeaders)
-                                }
-                            } else {
+                            Button(
+                                onClick = { showBrowserLogin = true },
+                                enabled = !isBusy,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(strings.loginWithBrowser)
+                            }
+                            TextButton(
+                                onClick = { showLoginField = !showLoginField },
+                                enabled = !isBusy,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(strings.loginWithHeaders)
+                            }
+                            if (showLoginField) {
                                 OutlinedTextField(
                                     value = headersText,
                                     onValueChange = { headersText = it },
@@ -163,7 +174,6 @@ fun AccountScreen(
                                 OutlinedButton(
                                     onClick = {
                                         scope.launch {
-                                            AuthRepository.refreshLiked()
                                             AuthRepository.refreshPlaylists()
                                         }
                                     },
@@ -171,7 +181,7 @@ fun AccountScreen(
                                 ) {
                                     Icon(Icons.Default.Refresh, contentDescription = null)
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.refreshLikes)
+                                    Text(strings.refreshPlaylists)
                                 }
                             }
                         }
@@ -180,27 +190,6 @@ fun AccountScreen(
             }
 
             if (isLoggedIn) {
-                item {
-                    Text(
-                        text = strings.likedSection.format(likedTracks.size),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                }
-                if (likedTracks.isEmpty()) {
-                    item {
-                        Text(
-                            strings.likedEmpty,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else {
-                    items(likedTracks, key = { "like:${it.videoId}" }) { track ->
-                        TrackRow(
-                            track = track,
-                            onClick = { onTrackClick(track, likedTracks) },
-                        )
-                    }
-                }
 
                 item {
                     Row(
@@ -208,7 +197,7 @@ fun AccountScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            text = strings.playlistsSection,
+                            text = strings.playlistsSection.format(playlists.size),
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f),
                         )
@@ -306,7 +295,74 @@ fun AccountScreen(
                         }
                     }
                 }
+
+
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    LiquidGlassSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { expandedLiked = !expandedLiked }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = strings.likedSection.format(likedTracks.size),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = { scope.launch { AuthRepository.refreshLiked() } },
+                                    enabled = !isBusy,
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = strings.refreshLikes)
+                                }
+                                Icon(
+                                    if (expandedLiked) Icons.Default.ExpandLess
+                                    else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                )
+                            }
+                            if (expandedLiked) {
+                                if (likedTracks.isEmpty()) {
+                                    Text(
+                                        strings.likedEmpty,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } else {
+                                    likedTracks.forEach { track ->
+                                        TrackRow(
+                                            track = track,
+                                            onClick = { onTrackClick(track, likedTracks) },
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if (showBrowserLogin) {
+        BrowserLoginDialog(
+            onDismiss = { showBrowserLogin = false },
+            onCookiesCaptured = { headers ->
+                scope.launch {
+                    val ok = AuthRepository.loginWithHeaders(headers)
+                    if (ok) {
+                        showBrowserLogin = false
+                    }
+                }
+            },
+        )
     }
 }

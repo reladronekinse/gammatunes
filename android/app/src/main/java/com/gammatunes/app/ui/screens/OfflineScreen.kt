@@ -25,11 +25,6 @@ import com.gammatunes.app.offline.OfflineRepository
 import com.gammatunes.app.ui.components.DownloadButton
 import com.gammatunes.app.ui.components.LiquidGlassSurface
 
-/**
- * Вкладка со скачанными треками — играют без сети (см. PlayerState.loadAndPlay,
- * ветка с OfflineRepository.localTrack). Порядок в очереди для кнопок
- * "предыдущий"/"следующий" — как в списке на этом экране.
- */
 @Composable
 fun OfflineScreen(onTrackClick: (Track, List<Track>) -> Unit) {
     val index by OfflineRepository.index.collectAsState()
@@ -115,8 +110,8 @@ private fun OfflineTrackRow(track: Track, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // Тот же DownloadButton — тут он всегда в состоянии "скачано",
-            // повторный тап удаляет локальную копию прямо из этого списка.
+
+
             DownloadButton(track = track)
         }
     }

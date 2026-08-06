@@ -21,6 +21,7 @@ enum class SeekBarStyle(val id: String) {
     DEFAULT("default"),
     THIN("thin"),
     WAVE("wave"),
+    SQUIGGLE("squiggle"),
     ;
 
     companion object {
@@ -48,6 +49,7 @@ enum class AccentOption(val id: String, val color: Long) {
 
 enum class BackgroundStyle(val id: String) {
     BLUR_ART("blur_art"),
+    FULL_COVER("full_cover"),
     SOLID_DARK("solid_dark"),
     GRADIENT("gradient"),
     ;
@@ -62,6 +64,8 @@ data class UiSettings(
     val seekBarStyle: SeekBarStyle = SeekBarStyle.DEFAULT,
     val accent: AccentOption = AccentOption.RED,
     val backgroundStyle: BackgroundStyle = BackgroundStyle.BLUR_ART,
+
+    val accentFromCover: Boolean = false,
 )
 
 object UiSettingsRepository {
@@ -70,6 +74,7 @@ object UiSettingsRepository {
     private const val KEY_SEEK = "seek"
     private const val KEY_ACCENT = "accent"
     private const val KEY_BG = "background"
+    private const val KEY_ACCENT_FROM_COVER = "accent_from_cover"
 
     private val _settings = MutableStateFlow(UiSettings())
     val settings: StateFlow<UiSettings> = _settings.asStateFlow()
@@ -81,6 +86,7 @@ object UiSettingsRepository {
             seekBarStyle = SeekBarStyle.fromId(prefs.getString(KEY_SEEK, null)),
             accent = AccentOption.fromId(prefs.getString(KEY_ACCENT, null)),
             backgroundStyle = BackgroundStyle.fromId(prefs.getString(KEY_BG, null)),
+            accentFromCover = prefs.getBoolean(KEY_ACCENT_FROM_COVER, false),
         )
     }
 
@@ -91,6 +97,7 @@ object UiSettingsRepository {
             .putString(KEY_SEEK, s.seekBarStyle.id)
             .putString(KEY_ACCENT, s.accent.id)
             .putString(KEY_BG, s.backgroundStyle.id)
+            .putBoolean(KEY_ACCENT_FROM_COVER, s.accentFromCover)
             .apply()
         _settings.value = s
     }
@@ -109,5 +116,9 @@ object UiSettingsRepository {
 
     fun setBackgroundStyle(context: Context, style: BackgroundStyle) {
         persist(context, _settings.value.copy(backgroundStyle = style))
+    }
+
+    fun setAccentFromCover(context: Context, enabled: Boolean) {
+        persist(context, _settings.value.copy(accentFromCover = enabled))
     }
 }

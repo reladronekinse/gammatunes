@@ -28,7 +28,6 @@ data class OfflineTrack(
     val mimeType: String,
 )
 
-/** Скачанный альбом: метаданные + videoId в исходном порядке. */
 data class OfflineAlbum(
     val albumId: String,
     val title: String,
@@ -40,7 +39,7 @@ data class OfflineAlbum(
 object OfflineRepository {
     private const val TAG = "OfflineRepository"
 
-    /** Не зависит от UI: переключение вкладок не отменяет скачивание. */
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private const val INDEX_FILE = "offline_index.json"
@@ -82,7 +81,7 @@ object OfflineRepository {
         pruneMissing()
     }
 
-    /** Убирает из индекса записи без файла на диске (и пустые альбомы). */
+
     fun pruneMissing() {
         val before = _index.value
         val kept = before.filterValues { offline ->
@@ -114,7 +113,7 @@ object OfflineRepository {
         val offline = _index.value[videoId] ?: return null
         val f = File(offline.filePath)
         if (!f.exists() || f.length() < 1024L) {
-            // Файл пропал — убираем из индекса, чтобы не врать UI
+
             _index.update { it - videoId }
             persistIndexToDisk()
             return null
@@ -130,7 +129,7 @@ object OfflineRepository {
     private fun offlineDir(): File =
         File(appContext.filesDir, "offline").apply { if (!exists()) mkdirs() }
 
-    /** Запуск скачивания трека; не привязан к lifecycle экрана. */
+
     fun download(track: Track) {
         val videoId = track.videoId
         if (isDownloaded(videoId) || _downloadingIds.value.contains(videoId)) return
@@ -161,11 +160,7 @@ object OfflineRepository {
         }
     }
 
-    /**
-     * Скачивание альбома в app-scope: уход с экрана/вкладки не прерывает очередь.
-     * В индекс альбома попадают только реально скачанные треки; «скачан»
-     * только если скачались все треки из списка.
-     */
+
     fun downloadAlbum(
         albumId: String,
         title: String,
@@ -219,13 +214,13 @@ object OfflineRepository {
                     return@launch
                 }
 
-                // Альбом «скачан» только когда есть все треки.
+
                 if (orderedIds.size < snapshot.size) {
                     Log.w(
                         TAG,
                         "Альбом $albumId неполный: ${orderedIds.size}/${snapshot.size} — не помечаем скачанным",
                     )
-                    // Частично скачанные треки остаются в offline tracks, альбом — нет
+
                     return@launch
                 }
 
@@ -284,10 +279,7 @@ object OfflineRepository {
         }
     }
 
-    /**
-     * Stream URL (как у плеера) + простой OkHttp GET.
-     * Без HEAD/Range: googlevideo часто ломает второй запрос по тому же signed URL.
-     */
+
     private suspend fun downloadTrackFile(track: Track) {
         val videoId = track.videoId
 
@@ -377,7 +369,7 @@ object OfflineRepository {
         Log.i(TAG, "indexed $videoId size=${outFile.length()} path=${outFile.absolutePath}")
     }
 
-    /** Только явный мусор (HTML/JSON-ошибка), не строгая проверка контейнера. */
+
     private fun isClearlyNotAudio(file: File): Boolean {
         return try {
             file.inputStream().use { input ->

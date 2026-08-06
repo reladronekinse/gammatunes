@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.gammatunes.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -20,20 +24,22 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.gammatunes.app.ui.components.ZoomableImage
 import com.gammatunes.app.model.Album
 import com.gammatunes.app.model.Artist
 import com.gammatunes.app.network.ApiClient
 import com.gammatunes.app.ui.components.LiquidGlassSurface
 import com.gammatunes.app.ui.i18n.LocalStrings
 
-/**
- * Страница артиста. Альбомы и синглы/EP — две отдельные горизонтальные ленты.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtistDetailScreen(
     artistId: String,
     onAlbumClick: (Album) -> Unit,
+    onTrackClick: (com.gammatunes.app.model.Track, List<com.gammatunes.app.model.Track>) -> Unit = { _, _ -> },
+    onOpenPopular: () -> Unit = {},
+    onOpenAlbums: () -> Unit = {},
+    onOpenSingles: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val strings = LocalStrings.current
@@ -102,7 +108,43 @@ fun ArtistDetailScreen(
                             Spacer(Modifier.height(20.dp))
                         }
 
-                        // ---- Альбомы ----
+
+                        if (loadedArtist.songs.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(onClick = onOpenPopular)
+                                        .padding(bottom = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = strings.popularTracks,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = strings.showAllPopular + " (${loadedArtist.songs.size})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            items(
+                                loadedArtist.songs.take(5),
+                                key = { "song:${it.videoId}" },
+                            ) { track ->
+                                PopularTrackRow(
+                                    track = track,
+                                    onClick = { onTrackClick(track, loadedArtist.songs) },
+                                )
+                            }
+                            item { Spacer(Modifier.height(16.dp)) }
+                        }
+
+
                         if (loadedArtist.albums.isEmpty() && loadedArtist.singles.isEmpty()) {
                             item {
                                 Text(
@@ -114,13 +156,26 @@ fun ArtistDetailScreen(
 
                         if (loadedArtist.albums.isNotEmpty()) {
                             item {
-                                Text(
-                                    text = strings.albumsCount.format(loadedArtist.albums.size),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(bottom = 12.dp),
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(onClick = onOpenAlbums)
+                                        .padding(bottom = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = strings.albumsCount.format(loadedArtist.albums.size),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = strings.showAllPopular,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                             }
                             item {
                                 LazyRow(
@@ -137,16 +192,29 @@ fun ArtistDetailScreen(
                             }
                         }
 
-                        // ---- Синглы / EP ----
+
                         if (loadedArtist.singles.isNotEmpty()) {
                             item {
-                                Text(
-                                    text = strings.singlesCount.format(loadedArtist.singles.size),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(bottom = 12.dp),
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(onClick = onOpenSingles)
+                                        .padding(bottom = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = strings.singlesCount.format(loadedArtist.singles.size),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = strings.showAllPopular,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                             }
                             item {
                                 LazyRow(
@@ -172,7 +240,7 @@ fun ArtistDetailScreen(
 @Composable
 private fun ArtistHeader(artist: Artist) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        AsyncImage(
+        ZoomableImage(
             model = artist.thumbnail,
             contentDescription = artist.name,
             modifier = Modifier
@@ -191,7 +259,6 @@ private fun ArtistHeader(artist: Artist) {
     }
 }
 
-/** Горизонтальная карточка альбома/сингла в ленте артиста. */
 @Composable
 private fun AlbumCardHorizontal(album: Album, onClick: () -> Unit) {
     LiquidGlassSurface(
@@ -214,7 +281,7 @@ private fun AlbumCardHorizontal(album: Album, onClick: () -> Unit) {
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
             Spacer(Modifier.height(8.dp))
-            // Название по центру, шрифт уменьшается — без «...».
+
             AutoSizeSingleLineText(
                 text = album.title,
                 style = MaterialTheme.typography.bodyMedium,
@@ -238,7 +305,6 @@ private fun AlbumCardHorizontal(album: Album, onClick: () -> Unit) {
     }
 }
 
-/** Строка альбома (используется и в других экранах при необходимости). */
 @Composable
 fun AlbumRow(album: Album, onClick: () -> Unit) {
     LiquidGlassSurface(
@@ -280,6 +346,65 @@ fun AlbumRow(album: Album, onClick: () -> Unit) {
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PopularTrackRow(track: com.gammatunes.app.model.Track, onClick: () -> Unit) {
+    var showDownload by remember { mutableStateOf(false) }
+    val index by com.gammatunes.app.offline.OfflineRepository.index.collectAsState()
+    val downloadingIds by com.gammatunes.app.offline.OfflineRepository.downloadingIds.collectAsState()
+    val isDownloaded = index.containsKey(track.videoId)
+    val isDownloading = downloadingIds.contains(track.videoId)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showDownload = true },
+            )
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AsyncImage(
+            model = track.thumbnail,
+            contentDescription = track.title,
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!track.album.isNullOrBlank()) {
+                Text(
+                    text = track.album!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (showDownload || isDownloading || isDownloaded) {
+            com.gammatunes.app.ui.components.DownloadButton(track = track)
+        }
+    }
+
+    if (showDownload && !isDownloaded && !isDownloading) {
+        LaunchedEffect(track.videoId) {
+            com.gammatunes.app.offline.OfflineRepository.download(track)
+            kotlinx.coroutines.delay(2500)
+            showDownload = false
         }
     }
 }

@@ -44,7 +44,7 @@ To point the app at an external backend instead of the on-device one, change
 `LocalBackend.BASE_URL` in
 `android/app/src/main/java/com/gammatunes/app/backend/LocalBackend.kt`.
 
-## Features (0.2)
+## Features (0.3-stable)
 
 - Embedded Python backend (ytmusicapi + yt-dlp) via Chaquopy
 - Material 3 UI with Liquid Glass surfaces

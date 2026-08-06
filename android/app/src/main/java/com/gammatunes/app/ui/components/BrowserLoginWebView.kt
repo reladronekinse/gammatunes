@@ -2,38 +2,41 @@ package com.gammatunes.app.ui.components
 
 import android.annotation.SuppressLint
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
+import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.gammatunes.app.ui.i18n.LocalStrings
-import kotlinx.coroutines.delay
 
-/**
- * WebView-логин на music.youtube.com.
- *
- * Google часто отвечает «This browser or app may not be secure», потому что
- * системный WebView:
- *  - добавляет "; wv" в User-Agent;
- *  - шлёт заголовок X-Requested-With: <package name>.
- *
- * Здесь:
- *  - подставляем обычный Chrome Mobile UA без "wv";
- *  - на каждую навигацию грузим URL с пустым X-Requested-With;
- *  - если всё равно упёрлись в блок Google — показываем короткую подсказку
- *    про ручную вставку headers.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -46,75 +49,69 @@ fun BrowserLoginDialog(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var captured by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
+    var pageLoading by remember { mutableStateOf(true) }
     var googleBlocked by remember { mutableStateOf(false) }
+    var visitorData by remember { mutableStateOf("") }
+    var dataSyncId by remember { mutableStateOf("") }
 
-    fun collectCookieHeader(): String? {
-        val cm = CookieManager.getInstance()
-        cm.flush()
-        val domains = listOf(
-            "https://music.youtube.com",
-            "https://www.youtube.com",
-            "https://youtube.com",
-            "https://accounts.google.com",
-            "https://www.google.com",
-            "https://google.com",
-        )
-        val jar = linkedMapOf<String, String>()
-        for (domain in domains) {
-            val raw = cm.getCookie(domain) ?: continue
-            for (part in raw.split(";")) {
-                val trimmed = part.trim()
-                if (trimmed.isEmpty() || "=" !in trimmed) continue
-                val eq = trimmed.indexOf('=')
-                val name = trimmed.substring(0, eq).trim()
-                val value = trimmed.substring(eq + 1).trim()
-                if (name.isNotEmpty()) jar[name] = value
-            }
-        }
-        if (jar.isEmpty()) return null
-        // Без __Secure-3PAPISID/SAPISID ytmusicapi не сможет собрать SAPISIDHASH.
-        val hasSapi = jar.containsKey("__Secure-3PAPISID") || jar.containsKey("SAPISID")
-        val hasSession = jar.containsKey("SID") || jar.containsKey("__Secure-3PSID") ||
-            jar.containsKey("LOGIN_INFO")
-        if (!hasSapi || !hasSession) return null
-        return jar.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    fun musicCookie(): String =
+        CookieManager.getInstance().getCookie("https://music.youtube.com").orEmpty()
+
+    fun isUsableCookie(cookie: String): Boolean {
+        if (cookie.isBlank()) return false
+
+        return cookie.contains("SAPISID=") || cookie.contains("__Secure-3PAPISID=")
     }
 
-    fun buildHeadersRaw(cookie: String, userAgent: String): String = buildString {
+    fun buildHeadersRaw(cookie: String): String = buildString {
         append("Cookie: ")
         append(cookie)
         append("\n")
         append("User-Agent: ")
-        append(userAgent)
+        append(DESKTOP_CHROME_UA)
         append("\n")
         append("Accept: */*\n")
         append("Accept-Language: en-US,en;q=0.9\n")
         append("Content-Type: application/json\n")
         append("X-Goog-AuthUser: 0\n")
         append("x-origin: https://music.youtube.com\n")
+        append("Origin: https://music.youtube.com\n")
+        if (visitorData.isNotBlank() && visitorData != "undefined" && visitorData != "null") {
+            append("X-Goog-Visitor-Id: ")
+            append(visitorData)
+            append("\n")
+        }
+        if (dataSyncId.isNotBlank() && dataSyncId != "undefined" && dataSyncId != "null") {
+            append("X-Goog-DataSyncId: ")
+            append(dataSyncId)
+            append("\n")
+        }
     }
 
-    fun tryCapture(webView: WebView, force: Boolean = false): Boolean {
-        if (captured) return true
-        val cookie = collectCookieHeader() ?: return false
-        val url = webView.url.orEmpty()
-        val onMusic = url.startsWith("https://music.youtube.com")
-        if (!force && !onMusic) return false
-
-        val ua = webView.settings.userAgentString ?: CHROME_MOBILE_UA
+    fun completeLogin(force: Boolean = false) {
+        if (captured || isSaving) return
+        val cookie = musicCookie()
+        if (!isUsableCookie(cookie)) {
+            if (force) status = strings.needHeaders
+            return
+        }
         captured = true
+        isSaving = true
         status = strings.sessionActive
-        onCookiesCaptured(buildHeadersRaw(cookie, ua))
-        return true
-    }
 
-    fun loadWithoutWebViewMarker(view: WebView, url: String) {
-        // Пустой X-Requested-With убирает главный сигнал «это WebView» для Google.
-        view.loadUrl(url, mapOf("X-Requested-With" to ""))
+        mainHandler.postDelayed({
+            onCookiesCaptured(buildHeadersRaw(cookie))
+        }, 400)
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+
+            if (!captured) completeLogin(force = true)
+            onDismiss()
+        },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
@@ -124,34 +121,27 @@ fun BrowserLoginDialog(
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopAppBar(
-                    title = {
-                        Text(strings.browserLoginTitle, maxLines = 1)
-                    },
+                    title = { Text(strings.browserLoginTitle, maxLines = 1) },
                     navigationIcon = {
-                        IconButton(onClick = onDismiss) {
+                        IconButton(onClick = {
+                            if (!captured) completeLogin(force = true)
+                            onDismiss()
+                        }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back)
                         }
                     },
                     actions = {
                         TextButton(
-                            onClick = {
-                                val wv = webViewRef
-                                if (wv == null) {
-                                    status = strings.browserLoginHint
-                                    return@TextButton
-                                }
-                                isSaving = true
-                                if (!tryCapture(wv, force = true)) {
-                                    isSaving = false
-                                    status = strings.needHeaders
-                                }
-                            },
+                            onClick = { completeLogin(force = true) },
                             enabled = !isSaving && !captured,
                         ) {
                             Text(strings.saveAndLogin)
                         }
                     },
                 )
+                if (pageLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
                 Text(
                     text = if (googleBlocked) strings.browserBlockedHint else status,
                     style = MaterialTheme.typography.bodySmall,
@@ -161,7 +151,7 @@ fun BrowserLoginDialog(
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     maxLines = 4,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
                 AndroidView(
                     factory = { context ->
@@ -169,8 +159,9 @@ fun BrowserLoginDialog(
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.databaseEnabled = true
-                            settings.javaScriptCanOpenWindowsAutomatically = true
-                            settings.setSupportMultipleWindows(false)
+                            settings.setSupportZoom(true)
+                            settings.builtInZoomControls = true
+                            settings.displayZoomControls = false
                             settings.loadsImagesAutomatically = true
                             settings.useWideViewPort = true
                             settings.loadWithOverviewMode = true
@@ -178,9 +169,7 @@ fun BrowserLoginDialog(
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                             }
-                            // Важно: без "; wv" и без десктопного UA —
-                            // Google меньше подозревает automation/WebView.
-                            settings.userAgentString = CHROME_MOBILE_UA
+
 
                             val cm = CookieManager.getInstance()
                             cm.setAcceptCookie(true)
@@ -188,26 +177,48 @@ fun BrowserLoginDialog(
                                 cm.setAcceptThirdPartyCookies(this, true)
                             }
 
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                ): Boolean {
-                                    val target = request?.url?.toString() ?: return false
-                                    if (view != null) {
-                                        loadWithoutWebViewMarker(view, target)
-                                        return true
+                            addJavascriptInterface(
+                                object {
+                                    @JavascriptInterface
+                                    fun onRetrieveVisitorData(value: String?) {
+                                        if (!value.isNullOrBlank() && value != "undefined" && value != "null") {
+                                            mainHandler.post { visitorData = value }
+                                        }
                                     }
-                                    return false
+
+                                    @JavascriptInterface
+                                    fun onRetrieveDataSyncId(value: String?) {
+                                        if (!value.isNullOrBlank() && value != "undefined" && value != "null") {
+                                            mainHandler.post {
+                                                dataSyncId = value.substringBefore("||")
+                                            }
+                                        }
+                                    }
+                                },
+                                "Android",
+                            )
+
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                    super.onPageStarted(view, url, favicon)
+                                    pageLoading = true
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
+                                    pageLoading = false
                                     if (view == null || captured) return
 
-                                    // Детект страницы блокировки Google.
+
+                                    view.loadUrl(
+                                        "javascript:Android.onRetrieveVisitorData(window.yt && window.yt.config_ && window.yt.config_.VISITOR_DATA)",
+                                    )
+                                    view.loadUrl(
+                                        "javascript:Android.onRetrieveDataSyncId(window.yt && window.yt.config_ && window.yt.config_.DATASYNC_ID)",
+                                    )
+
                                     view.evaluateJavascript(
-                                        "(function(){try{return document.body?document.body.innerText.slice(0,500):'';}catch(e){return '';}})()",
+                                        "(function(){try{return document.body?document.body.innerText.slice(0,600):'';}catch(e){return '';}})()",
                                     ) { text ->
                                         val plain = text.trim('"').replace("\\n", " ")
                                         if (
@@ -220,13 +231,21 @@ fun BrowserLoginDialog(
                                         }
                                     }
 
-                                    if (url != null && url.startsWith("https://music.youtube.com")) {
-                                        tryCapture(view, force = false)
+
+                                    if (url != null && url.contains("music.youtube.com") && !captured) {
+                                        val cookie = musicCookie()
+                                        if (isUsableCookie(cookie)) {
+
+                                            mainHandler.postDelayed({
+                                                if (!captured) completeLogin(force = false)
+                                            }, 800)
+                                        }
                                     }
                                 }
                             }
                             webViewRef = this
-                            loadWithoutWebViewMarker(this, "https://music.youtube.com")
+
+                            loadUrl(LOGIN_URL)
                         }
                     },
                     modifier = Modifier
@@ -238,19 +257,9 @@ fun BrowserLoginDialog(
         }
     }
 
-    LaunchedEffect(Unit) {
-        while (!captured) {
-            delay(2000)
-            val wv = webViewRef ?: continue
-            val url = wv.url.orEmpty()
-            if (url.startsWith("https://music.youtube.com")) {
-                if (tryCapture(wv, force = false)) break
-            }
-        }
-    }
-
     DisposableEffect(Unit) {
         onDispose {
+            mainHandler.removeCallbacksAndMessages(null)
             webViewRef?.apply {
                 stopLoading()
                 destroy()
@@ -260,6 +269,8 @@ fun BrowserLoginDialog(
     }
 }
 
-// Обычный Chrome на Android — без маркера "; wv", который WebView добавляет сам.
-private const val CHROME_MOBILE_UA =
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+private const val DESKTOP_CHROME_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+private const val LOGIN_URL =
+    "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com"

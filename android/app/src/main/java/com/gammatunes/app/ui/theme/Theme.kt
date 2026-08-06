@@ -36,8 +36,9 @@ val LocalGlassTokens = staticCompositionLocalOf {
 private fun buildDarkScheme(accent: Color) = darkColorScheme(
     primary = accent,
     onPrimary = Color.White,
-    primaryContainer = lerp(accent, Color.Black, 0.65f),
-    onPrimaryContainer = lerp(accent, Color.White, 0.85f),
+
+    primaryContainer = lerp(accent, Color.Black, 0.45f),
+    onPrimaryContainer = lerp(accent, Color.White, 0.90f),
     secondary = SeedSecondary,
     onSecondary = SeedOnSecondary,
     secondaryContainer = SeedSecondaryContainer,
@@ -62,11 +63,18 @@ fun GammaTunesTheme(
 ) {
     val context = LocalContext.current
     val ui by UiSettingsRepository.settings.collectAsState()
+    val coverAccent by DynamicAccent.coverAccent.collectAsState()
+
+    val accentColor = if (ui.accentFromCover) {
+        coverAccent ?: ui.accent.composeColor
+    } else {
+        ui.accent.composeColor
+    }
 
     val colorScheme = if (useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         dynamicDarkColorScheme(context)
     } else {
-        buildDarkScheme(ui.accent.composeColor)
+        buildDarkScheme(accentColor)
     }
 
     val glassTokens = GlassTokens(tint = GlassTintDark, border = GlassBorderDark)

@@ -5,11 +5,11 @@ data class Track(
     val title: String,
     val artist: String,
     val album: String? = null,
-    /** browseId альбома/релиза — для перехода с плеера на страницу альбома. */
+
     val albumId: String? = null,
     val thumbnail: String? = null,
     val durationSeconds: Int? = null,
-    /** browseId артиста из YTMusic — нужен для перехода с плеера на карточку. */
+
     val artistId: String? = null,
 )
 
@@ -26,17 +26,14 @@ data class Artist(
     val thumbnail: String? = null,
     val albums: List<Album> = emptyList(),
     val singles: List<Album> = emptyList(),
+
+    val songs: List<Track> = emptyList(),
 )
 
-// Результат поиска: карточки артистов (не треков). Каждый элемент здесь —
-// "лёгкая" версия артиста без альбомов; полный список альбомов подгружается
-// отдельным запросом (GET /artists/{artistId}) по тапу на карточку.
 data class ArtistSearchResponse(
     val artists: List<Artist> = emptyList(),
 )
 
-// Результат поиска треков (песен) — используется вместе с ArtistSearchResponse:
-// поиск теперь отдаёт и артистов, и отдельные треки, как в самом YouTube Music.
 data class SearchResponse(
     val results: List<Track> = emptyList(),
 )
@@ -53,12 +50,12 @@ data class StreamResponse(
     val streamUrl: String,
     val mimeType: String,
     val bitrate: Int,
-    // HTTP-заголовки (в первую очередь User-Agent), с которыми yt-dlp получил
-    // эту ссылку. YouTube привязывает подписанную ссылку к заголовкам запроса:
-    // если плеер запрашивает поток с другим User-Agent, соединение начинает
-    // жёстко троттлиться и обрывается через несколько секунд после начала
-    // воспроизведения. Поэтому эти заголовки нужно передать в ExoPlayer как
-    // есть, а не полагаться на его заголовки по умолчанию.
+
+
+
+
+
+
     val httpHeaders: Map<String, String> = emptyMap(),
 )
 
@@ -81,7 +78,6 @@ data class SimpleOkResponse(
     val detail: String? = null,
 )
 
-
 data class PlaylistSummary(
     val playlistId: String,
     val title: String,
@@ -97,4 +93,13 @@ data class PlaylistTracksResponse(
     val playlistId: String,
     val title: String,
     val tracks: List<Track> = emptyList(),
+)
+
+data class LyricsApiResponse(
+    val ok: Boolean = false,
+    val synced: Boolean = false,
+    val source: String? = null,
+    val lrc: String? = null,
+    val plain: String? = null,
+    val error: String? = null,
 )

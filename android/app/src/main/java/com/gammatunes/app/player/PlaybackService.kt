@@ -12,10 +12,6 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.gammatunes.app.MainActivity
 
-/**
- * Foreground MediaSessionService: ExoPlayer + MediaSession → системное
- * media-уведомление с мини-плеером (play/pause/prev/next).
- */
 @UnstableApi
 class PlaybackService : MediaSessionService() {
 
@@ -31,7 +27,7 @@ class PlaybackService : MediaSessionService() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                /* handleAudioFocus = */ true,
+                 true,
             )
             .setHandleAudioBecomingNoisy(true)
             .build()

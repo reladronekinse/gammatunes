@@ -1,7 +1,13 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.gammatunes.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import com.gammatunes.app.offline.OfflineRepository
+import com.gammatunes.app.player.PlayHistoryRepository
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,14 +37,6 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
-/**
- * Поиск отдаёт и артистов, и отдельные треки (песни) — как в самом
- * YouTube Music: тап на артиста открывает его страницу со всеми альбомами
- * (ArtistDetailScreen), тап на трек сразу запускает воспроизведение.
- *
- * Оба запроса выполняются параллельно. Без сети / при недоступном
- * бэкенде показываем понятную ошибку — приложение не падает.
- */
 @Composable
 fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Track>) -> Unit) {
     val strings = LocalStrings.current
@@ -57,8 +55,8 @@ fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Tra
         hasSearched = true
         scope.launch {
             try {
-                // Если встроенный бэкенд ещё не поднялся / упал — не ходим в сеть
-                // и не роняем UI необработанным исключением.
+
+
                 if (LocalBackend.lastError != null) {
                     error = LocalBackend.lastError
                     artistResults = emptyList()
@@ -86,8 +84,8 @@ fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Tra
                     artistResults = artists
                     trackResults = tracks
                     if (artists.isEmpty() && tracks.isEmpty()) {
-                        // Оба пустые — либо реально ничего, либо оба запроса упали.
-                        // Попробуем один раз синхронно, чтобы вытащить текст ошибки.
+
+
                         try {
                             ApiClient.api.searchTracks(query)
                         } catch (t: Throwable) {
@@ -145,10 +143,25 @@ fun SearchScreen(onArtistClick: (Artist) -> Unit, onTrackClick: (Track, List<Tra
             )
         }
 
+        val recent by PlayHistoryRepository.recent.collectAsState()
+
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
+
+            if (!hasSearched && !isLoading && recent.isNotEmpty()) {
+                item {
+                    Text(
+                        text = strings.recentlyPlayed,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                    )
+                }
+                items(recent, key = { "recent:${it.videoId}" }) { track ->
+                    TrackRow(track = track, onClick = { onTrackClick(track, recent) })
+                }
+            }
             if (artistResults.isNotEmpty()) {
                 item {
                     Text(
@@ -191,7 +204,6 @@ private fun friendlyNetworkError(t: Throwable, strings: com.gammatunes.app.ui.i1
     }
 }
 
-/** Карточка артиста в списке результатов поиска. */
 @Composable
 private fun ArtistResultRow(artist: Artist, onClick: () -> Unit) {
     LiquidGlassSurface(
@@ -229,10 +241,19 @@ private fun ArtistResultRow(artist: Artist, onClick: () -> Unit) {
 
 @Composable
 fun TrackRow(track: Track, onClick: () -> Unit) {
+    var showDownload by remember { mutableStateOf(false) }
+    val index by OfflineRepository.index.collectAsState()
+    val downloadingIds by OfflineRepository.downloadingIds.collectAsState()
+    val isDownloaded = index.containsKey(track.videoId)
+    val isDownloading = downloadingIds.contains(track.videoId)
+
     LiquidGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showDownload = true },
+            ),
         shape = RoundedCornerShape(16.dp),
     ) {
         Row(
@@ -265,7 +286,18 @@ fun TrackRow(track: Track, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            DownloadButton(track = track)
+
+            if (showDownload || isDownloading || isDownloaded) {
+                DownloadButton(track = track)
+            }
+        }
+    }
+
+    if (showDownload && !isDownloaded && !isDownloading) {
+        LaunchedEffect(track.videoId) {
+            OfflineRepository.download(track)
+            kotlinx.coroutines.delay(2500)
+            showDownload = false
         }
     }
 }

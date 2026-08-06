@@ -5,6 +5,7 @@ import android.util.Log
 import com.gammatunes.app.model.PlaylistSummary
 import com.gammatunes.app.model.Track
 import com.gammatunes.app.network.ApiClient
+import com.gammatunes.app.network.addToPlaylist
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,14 +13,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import retrofit2.HttpException
 
-/**
- * Хранение browser-auth для YouTube Music и загрузка лайкнутых треков.
- *
- * На телефоне полноценный OAuth неудобен (нужен client_id/secret Google Cloud),
- * поэтому используем тот же способ, что и ytmusicapi browser auth: пользователь
- * копирует Request Headers из DevTools на music.youtube.com и вставляет их
- * в приложение. Бэкенд сохраняет JSON и пересоздаёт YTMusic с auth.
- */
 object AuthRepository {
     private const val TAG = "AuthRepository"
     private const val AUTH_FILE = "ytm_browser_auth.json"
@@ -55,18 +48,15 @@ object AuthRepository {
 
     private fun authFile(): File = File(appContext.filesDir, AUTH_FILE)
 
-    /**
-     * [rawHeaders] — текст из DevTools (Request Headers) или уже готовый JSON
-     * с ключами Cookie / Authorization и т.д.
-     */
+
     suspend fun loginWithHeaders(rawHeaders: String): Boolean = withContext(Dispatchers.IO) {
         _isBusy.value = true
         _statusMessage.value = null
         try {
             val response = ApiClient.api.authLogin(mapOf("headersRaw" to rawHeaders.trim()))
             if (response.ok) {
-                // Сохраняем копию локально, чтобы при следующем старте бэкенда
-                // Kotlin мог снова передать файл (бэкенд читает путь из POST).
+
+
                 authFile().writeText(response.authJson ?: rawHeaders)
                 _isLoggedIn.value = true
                 _accountHint.value = response.accountName ?: "Вход выполнен"
@@ -92,7 +82,7 @@ object AuthRepository {
             } catch (_: Throwable) {
                 null
             }
-            // backend: {"detail":"..."}
+
             if (!body.isNullOrBlank()) {
                 val key = "\"detail\""
                 val idx = body.indexOf(key)
@@ -102,19 +92,50 @@ object AuthRepository {
                     val firstQuote = after.indexOf('"', startIndex = (colon + 1).coerceAtLeast(0))
                     val secondQuote = if (firstQuote >= 0) after.indexOf('"', startIndex = firstQuote + 1) else -1
                     if (firstQuote >= 0 && secondQuote > firstQuote) {
-                        return after.substring(firstQuote + 1, secondQuote).take(220)
+                        return decodeJsonString(after.substring(firstQuote + 1, secondQuote)).take(280)
                     }
                 }
-                // Не показываем сырой dict от YouTube на весь экран
-                val cleaned = body
-                    .replace("\n", " ")
-                    .replace(Regex("\\n"), " ")
-                    .take(180)
+
+                val cleaned = decodeJsonString(
+                    body.replace("\n", " ").replace(Regex("\\\\n"), " "),
+                ).take(200)
                 return cleaned
             }
             return "HTTP ${t.code()}"
         }
         return t.message ?: "Ошибка входа"
+    }
+
+
+    private fun decodeJsonString(raw: String): String {
+        return buildString(raw.length) {
+            var i = 0
+            while (i < raw.length) {
+                val c = raw[i]
+                if (c == '\\' && i + 1 < raw.length) {
+                    when (raw[i + 1]) {
+                        'u' -> {
+                            if (i + 5 < raw.length) {
+                                val hex = raw.substring(i + 2, i + 6)
+                                val code = hex.toIntOrNull(16)
+                                if (code != null) {
+                                    append(code.toChar())
+                                    i += 6
+                                    continue
+                                }
+                            }
+                        }
+                        'n' -> { append('\n'); i += 2; continue }
+                        't' -> { append('\t'); i += 2; continue }
+                        '"' -> { append('"'); i += 2; continue }
+                        '\\' -> { append('\\'); i += 2; continue }
+                        '/' -> { append('/'); i += 2; continue }
+                    }
+                }
+                append(c)
+                i++
+            }
+        }
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
@@ -196,7 +217,17 @@ object AuthRepository {
         }
     }
 
-    /** При старте приложения — если есть сохранённый auth, прокинуть в бэкенд. */
+    suspend fun addToPlaylist(playlistId: String, videoId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.api.addToPlaylist(playlistId, videoId)
+            resp.ok
+        } catch (t: Throwable) {
+            Log.e(TAG, "addToPlaylist failed", t)
+            false
+        }
+    }
+
+
     suspend fun restoreSessionIfNeeded() = withContext(Dispatchers.IO) {
         val file = authFile()
         if (!file.exists()) return@withContext

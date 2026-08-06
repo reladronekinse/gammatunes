@@ -3,9 +3,6 @@ package com.gammatunes.app.player
 import androidx.media3.exoplayer.ExoPlayer
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Мост между [PlaybackService] (ExoPlayer + MediaSession) и [PlayerState].
- */
 object PlayerBridge {
 
     private val playerRef = AtomicReference<ExoPlayer?>(null)

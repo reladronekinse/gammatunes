@@ -68,7 +68,12 @@ fun AppearanceScreen(onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     Text(strings.coverStyleLabel, style = MaterialTheme.typography.labelLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         listOf(
                             CoverStyle.SQUARE to strings.coverSquare,
                             CoverStyle.ROUNDED to strings.coverRounded,
@@ -77,30 +82,44 @@ fun AppearanceScreen(onBack: () -> Unit) {
                             FilterChip(
                                 selected = uiSettings.coverStyle == style,
                                 onClick = { UiSettingsRepository.setCoverStyle(context, style) },
-                                label = { Text(label) },
+                                label = { Text(label, maxLines = 1, softWrap = false) },
                             )
                         }
                     }
 
                     Text(strings.seekBarStyleLabel, style = MaterialTheme.typography.labelLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         listOf(
                             SeekBarStyle.DEFAULT to strings.seekDefault,
                             SeekBarStyle.THIN to strings.seekThin,
                             SeekBarStyle.WAVE to strings.seekWave,
+                            SeekBarStyle.SQUIGGLE to strings.seekSquiggle,
                         ).forEach { (style, label) ->
                             FilterChip(
                                 selected = uiSettings.seekBarStyle == style,
                                 onClick = { UiSettingsRepository.setSeekBarStyle(context, style) },
-                                label = { Text(label) },
+                                label = {
+                                    Text(label, maxLines = 1, softWrap = false)
+                                },
                             )
                         }
                     }
 
                     Text(strings.backgroundStyleLabel, style = MaterialTheme.typography.labelLarge)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         listOf(
                             BackgroundStyle.BLUR_ART to strings.bgBlurArt,
+                            BackgroundStyle.FULL_COVER to strings.bgFullCover,
                             BackgroundStyle.SOLID_DARK to strings.bgSolid,
                             BackgroundStyle.GRADIENT to strings.bgGradient,
                         ).forEach { (style, label) ->
@@ -109,36 +128,58 @@ fun AppearanceScreen(onBack: () -> Unit) {
                                 onClick = {
                                     UiSettingsRepository.setBackgroundStyle(context, style)
                                 },
-                                label = { Text(label) },
+                                label = {
+                                    Text(label, maxLines = 1, softWrap = false)
+                                },
                             )
                         }
                     }
 
-                    Text(strings.accentColorLabel, style = MaterialTheme.typography.labelLarge)
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     ) {
-                        AccentOption.entries.forEach { opt ->
-                            val selected = uiSettings.accent == opt
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(opt.composeColor)
-                                    .then(
-                                        if (selected) {
-                                            Modifier.border(3.dp, Color.White, CircleShape)
-                                        } else {
-                                            Modifier
+                        Text(
+                            strings.accentFromCoverLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Switch(
+                            checked = uiSettings.accentFromCover,
+                            onCheckedChange = {
+                                UiSettingsRepository.setAccentFromCover(context, it)
+                            },
+                        )
+                    }
+
+                    if (!uiSettings.accentFromCover) {
+                        Text(strings.accentColorLabel, style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            AccentOption.entries.forEach { opt ->
+                                val selected = uiSettings.accent == opt
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(opt.composeColor)
+                                        .then(
+                                            if (selected) {
+                                                Modifier.border(3.dp, Color.White, CircleShape)
+                                            } else {
+                                                Modifier
+                                            },
+                                        )
+                                        .clickable {
+                                            UiSettingsRepository.setAccent(context, opt)
                                         },
-                                    )
-                                    .clickable {
-                                        UiSettingsRepository.setAccent(context, opt)
-                                    },
-                            )
+                                )
+                            }
                         }
                     }
                 }
