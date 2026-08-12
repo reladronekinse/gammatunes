@@ -32,7 +32,11 @@ interface YtmApi {
     suspend fun albumTracks(@Path("albumId") albumId: String): AlbumTracksResponse
 
     @GET("stream/{videoId}")
-    suspend fun stream(@Path("videoId") videoId: String): StreamResponse
+    suspend fun stream(
+        @Path("videoId") videoId: String,
+        @Query("quality") quality: String? = null,
+        @Query("video") video: Int? = null,
+    ): StreamResponse
 
     @GET("auth/status")
     suspend fun authStatus(): AuthStatusResponse
@@ -44,15 +48,15 @@ interface YtmApi {
     suspend fun authLogout(): SimpleOkResponse
 
     @GET("liked")
-    suspend fun likedSongs(@Query("limit") limit: Int = 100): SearchResponse
+    suspend fun likedSongs(@Query("limit") limit: Int = 5000): SearchResponse
 
     @GET("playlists")
-    suspend fun libraryPlaylists(@Query("limit") limit: Int = 50): PlaylistsResponse
+    suspend fun libraryPlaylists(@Query("limit") limit: Int = 100): PlaylistsResponse
 
     @GET("playlists/{playlistId}")
     suspend fun playlistTracks(
         @Path("playlistId") playlistId: String,
-        @Query("limit") limit: Int = 100,
+        @Query("limit") limit: Int = 5000,
     ): PlaylistTracksResponse
 
     @POST("rate")

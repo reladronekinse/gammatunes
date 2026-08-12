@@ -122,6 +122,11 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
 
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
+                    currentTrack?.let { finished ->
+                        if (!OfflineRepository.isDownloaded(finished.videoId)) {
+                            OfflineRepository.download(finished)
+                        }
+                    }
                     when (repeatMode) {
                         RepeatMode.ONE -> {
                             player.seekTo(0)
@@ -134,6 +139,7 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
                                 queueIndex = 0
                                 val t = queue[queueIndex]
                                 PlayHistoryRepository.record(t)
+                                PlayStatsRepository.record(t)
                                 loadAndPlay(t)
                             }
                         }
@@ -164,6 +170,7 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
             if (it >= 0) it else 0
         }
         PlayHistoryRepository.record(track)
+        PlayStatsRepository.record(track)
         if (track.videoId == currentTrack?.videoId) {
             togglePlayPause()
             return
@@ -176,6 +183,7 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         queueIndex++
         val t = queue[queueIndex]
         PlayHistoryRepository.record(t)
+        PlayStatsRepository.record(t)
         loadAndPlay(t)
     }
 
@@ -184,6 +192,7 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         queueIndex--
         val t = queue[queueIndex]
         PlayHistoryRepository.record(t)
+        PlayStatsRepository.record(t)
         loadAndPlay(t)
     }
 
@@ -237,7 +246,12 @@ class PlayerState(private val context: Context, private val scope: CoroutineScop
         isLoadingStream = true
         scope.launch {
             try {
-                val stream = ApiClient.api.stream(track.videoId)
+                val quality = PlaybackSettingsRepository.settings.value.quality.apiValue
+                val stream = ApiClient.api.stream(
+                    track.videoId,
+                    quality = quality,
+                    video = if (track.isVideo) 1 else null,
+                )
                 val player = awaitPlayer() ?: run {
                     streamError = "Плеер не готов"
                     return@launch

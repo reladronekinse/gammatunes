@@ -9,6 +9,13 @@ import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -49,9 +56,13 @@ import com.gammatunes.app.offline.OfflineRepository
 import com.gammatunes.app.ui.screens.MoreScreen
 import com.gammatunes.app.ui.screens.AccountScreen
 import com.gammatunes.app.ui.screens.AppearanceScreen
+import com.gammatunes.app.ui.screens.PlaybackScreen
+import com.gammatunes.app.ui.screens.UpdateScreen
 import com.gammatunes.app.ui.screens.OfflineTracksScreen
 import com.gammatunes.app.ui.screens.OfflineAlbumDetailScreen
 import com.gammatunes.app.ui.screens.OfflineAlbumsScreen
+import com.gammatunes.app.ui.screens.TopTracksScreen
+import com.gammatunes.app.ui.screens.TopArtistsScreen
 import com.gammatunes.app.ui.screens.PlayerScreen
 import com.gammatunes.app.ui.screens.SearchScreen
 import androidx.compose.runtime.CompositionLocalProvider
@@ -134,12 +145,31 @@ private fun AppContent() {
         }
     }
 
-    fun openPlayerTab() {
-        navController.navigate(Screen.Player.route) {
-            popUpTo(navController.graph.startDestinationId)
+    val mainTabRoutes = setOf(Screen.Search.route, Screen.Player.route, Screen.More.route)
+
+    // Leave any detail screen (artist/album/more/...) then land on a bottom tab.
+    fun navigateToTab(targetRoute: String) {
+        // Explicitly pop detail destinations that sit on top of tabs.
+        // Without this, artist/album can "trap" the stack so tab clicks appear to do nothing.
+        var guard = 0
+        while (guard++ < 40) {
+            val route = navController.currentDestination?.route ?: break
+            val isMainTab = route in mainTabRoutes
+            if (isMainTab) break
+            if (!navController.popBackStack()) break
+        }
+        val current = navController.currentDestination?.route
+        if (current == targetRoute) return
+        navController.navigate(targetRoute) {
+            popUpTo(Screen.Search.route) {
+                saveState = true
+            }
             launchSingleTop = true
+            restoreState = true
         }
     }
+
+    fun openPlayerTab() = navigateToTab(Screen.Player.route)
 
 
 
@@ -163,6 +193,11 @@ private fun AppContent() {
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
+            // Instant tab switches — default crossfade left Player painted over More
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None },
         ) {
             composable(Screen.Search.route) {
                 SearchScreen(
@@ -269,8 +304,33 @@ private fun AppContent() {
                 MoreScreen(
                     onOpenAccount = { navController.navigate("more/account") },
                     onOpenAppearance = { navController.navigate("more/appearance") },
+                    onOpenPlayback = { navController.navigate("more/playback") },
+                    onOpenUpdates = { navController.navigate("more/updates") },
                     onOpenOfflineTracks = { navController.navigate("more/offline_tracks") },
                     onOpenOfflineAlbums = { navController.navigate("more/offline_albums") },
+                    onOpenTopTracks = { navController.navigate("more/top_tracks") },
+                    onOpenTopArtists = { navController.navigate("more/top_artists") },
+                )
+            }
+            composable("more/playback") {
+                PlaybackScreen(onBack = { navController.popBackStack() })
+            }
+            composable("more/updates") {
+                UpdateScreen(onBack = { navController.popBackStack() })
+            }
+            composable("more/top_tracks") {
+                TopTracksScreen(
+                    onTrackClick = onTrackClick,
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable("more/top_artists") {
+                TopArtistsScreen(
+                    onArtistClick = { artistId ->
+                        val encodedId = URLEncoder.encode(artistId, "UTF-8")
+                        navController.navigate("artist/$encodedId")
+                    },
+                    onBack = { navController.popBackStack() },
                 )
             }
             composable("more/account") {
@@ -327,7 +387,7 @@ private fun AppContent() {
                     onTogglePlay = { playerState.togglePlayPause() },
                 )
             }
-            BottomBar(navController = navController, currentRoute = currentRoute)
+            BottomBar(currentRoute = currentRoute, onTabSelected = { navigateToTab(it) })
         }
     }
 }
@@ -386,7 +446,10 @@ private fun MiniPlayerBar(
 }
 
 @Composable
-private fun BottomBar(navController: NavHostController, currentRoute: String?) {
+private fun BottomBar(
+    currentRoute: String?,
+    onTabSelected: (String) -> Unit,
+) {
     val strings = LocalStrings.current
     fun labelFor(screen: Screen): String = when (screen) {
         Screen.Search -> strings.tabSearch
@@ -402,12 +465,7 @@ private fun BottomBar(navController: NavHostController, currentRoute: String?) {
             NavigationBarItem(
                 selected = currentRoute == screen.route ||
                         (screen.route == Screen.More.route && currentRoute?.startsWith("more/") == true),
-                onClick = {
-                    navController.navigate(screen.route) {
-                        popUpTo(navController.graph.startDestinationId)
-                        launchSingleTop = true
-                    }
-                },
+                onClick = { onTabSelected(screen.route) },
                 icon = {
                     Icon(
                         imageVector = screen.icon,

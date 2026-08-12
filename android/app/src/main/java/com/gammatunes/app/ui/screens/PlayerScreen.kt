@@ -1,4 +1,9 @@
+@file:OptIn(UnstableApi::class)
+
 package com.gammatunes.app.ui.screens
+
+import androidx.media3.common.util.UnstableApi
+
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
@@ -14,60 +19,75 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
+import kotlin.math.sin
 import coil.compose.AsyncImage
+import com.gammatunes.app.player.PlayerBridge
+import android.view.TextureView
+import androidx.compose.ui.viewinterop.AndroidView
 import com.gammatunes.app.auth.AuthRepository
 import com.gammatunes.app.lyrics.LyricsRepository
 import com.gammatunes.app.lyrics.LyricsResult
@@ -103,17 +123,48 @@ fun PlayerScreen(
 
 
     var positionMs by remember(track.videoId) { mutableLongStateOf(0L) }
-    var durationMs by remember(track.videoId) { mutableLongStateOf(0L) }
-    var isSeeking by remember { mutableStateOf(false) }
-    var seekFraction by remember { mutableFloatStateOf(0f) }
+    var durationMs by remember(track.videoId) {
+        mutableLongStateOf((track.durationSeconds?.toLong()?.times(1000L)) ?: 0L)
+    }
+    var isSeeking by remember(track.videoId) { mutableStateOf(false) }
+    var seekFraction by remember(track.videoId) { mutableFloatStateOf(0f) }
     var showLyrics by remember(track.videoId) { mutableStateOf(false) }
     var lyrics by remember(track.videoId) { mutableStateOf<LyricsResult?>(null) }
+    // Videos have no album/artist pages or synced lyrics — keep those UIs off
+    val lyricsEnabled = !track.isVideo
+    val effectiveShowLyrics = showLyrics && lyricsEnabled
+
+    // SurfaceView/PlayerView can remain as a top-level window and freeze the UI after
+    // leaving the player. TextureView + explicit clear prevents that.
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { PlayerBridge.player?.clearVideoSurface() }
+        }
+    }
+    DisposableEffect(track.videoId, track.isVideo) {
+        onDispose {
+            runCatching { PlayerBridge.player?.clearVideoSurface() }
+        }
+    }
+    LaunchedEffect(track.videoId, track.isVideo) {
+        if (!track.isVideo) {
+            runCatching { PlayerBridge.player?.clearVideoSurface() }
+        }
+    }
     var lyricsLoading by remember(track.videoId) { mutableStateOf(false) }
     var lyricsError by remember(track.videoId) { mutableStateOf<String?>(null) }
     val lyricsListState = rememberLazyListState()
 
-    LaunchedEffect(track.videoId, showLyrics) {
-        if (!showLyrics) return@LaunchedEffect
+    // Reset seek UI when track changes so we never show the previous track's progress
+    LaunchedEffect(track.videoId) {
+        isSeeking = false
+        seekFraction = 0f
+        positionMs = 0L
+        durationMs = (track.durationSeconds?.toLong()?.times(1000L)) ?: 0L
+    }
+
+    LaunchedEffect(track.videoId, effectiveShowLyrics) {
+        if (!effectiveShowLyrics) return@LaunchedEffect
         if (lyrics != null) return@LaunchedEffect
         lyricsLoading = true
         lyricsError = null
@@ -133,17 +184,29 @@ fun PlayerScreen(
         lyricsLoading = false
     }
 
-    LaunchedEffect(track.videoId, player.isPlaying) {
+    LaunchedEffect(track.videoId) {
         while (true) {
             if (!isSeeking) {
-                positionMs = player.positionMs
-                durationMs = player.durationMs
+                val playerDur = player.durationMs
+                // Prefer live player duration once available; keep metadata fallback otherwise
+                if (playerDur > 0L) {
+                    durationMs = playerDur
+                } else if (durationMs <= 0L) {
+                    val meta = track.durationSeconds?.toLong()?.times(1000L) ?: 0L
+                    if (meta > 0L) durationMs = meta
+                }
+                // While stream is loading, don't show stale position from the previous item
+                positionMs = if (player.isLoadingStream) 0L else player.positionMs
             }
-            delay(250)
+            delay(200)
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
         when (ui.backgroundStyle) {
             BackgroundStyle.BLUR_ART -> {
                 AsyncImage(
@@ -167,10 +230,10 @@ fun PlayerScreen(
                     contentDescription = null,
                     modifier = Modifier
                         .fillMaxSize()
-                        .then(if (showLyrics) Modifier.blur(32.dp) else Modifier),
+                        .then(if (effectiveShowLyrics) Modifier.blur(32.dp) else Modifier),
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 )
-                if (showLyrics) {
+                if (effectiveShowLyrics) {
 
                     Box(
                         modifier = Modifier
@@ -234,19 +297,20 @@ fun PlayerScreen(
             }
 
 
-            val showCoverInSlot = ui.backgroundStyle != BackgroundStyle.FULL_COVER
+            // Videos always use the art slot so the stream is visible
+            val showCoverInSlot = track.isVideo || ui.backgroundStyle != BackgroundStyle.FULL_COVER
             val artSpacer by animateDpAsState(
-                targetValue = if (showLyrics) 12.dp else 24.dp,
+                targetValue = if (effectiveShowLyrics) 12.dp else 24.dp,
                 animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
                 label = "artSpacer",
             )
             val coverAlpha by animateFloatAsState(
-                targetValue = if (showLyrics || !showCoverInSlot) 0f else 1f,
+                targetValue = if (effectiveShowLyrics || !showCoverInSlot) 0f else 1f,
                 animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
                 label = "coverAlpha",
             )
             val lyricsAlpha by animateFloatAsState(
-                targetValue = if (showLyrics) 1f else 0f,
+                targetValue = if (effectiveShowLyrics) 1f else 0f,
                 animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
                 label = "lyricsAlpha",
             )
@@ -255,7 +319,7 @@ fun PlayerScreen(
                 modifier = Modifier
                     .fillMaxWidth(0.9f)
                     .then(
-                        if (showLyrics || !showCoverInSlot) {
+                        if (effectiveShowLyrics || !showCoverInSlot) {
                             Modifier.weight(1f, fill = true)
                         } else {
                             Modifier.aspectRatio(1f)
@@ -264,17 +328,46 @@ fun PlayerScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 if (showCoverInSlot) {
-                    AsyncImage(
-                        model = track.thumbnail,
-                        contentDescription = track.title,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { alpha = coverAlpha }
-                            .clip(coverShape),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                    )
+                    if (track.isVideo) {
+                        // TextureView (not SurfaceView/PlayerView) so video can't float
+                        // above other screens and steal all touch events after navigation.
+                        AndroidView(
+                            factory = { ctx ->
+                                TextureView(ctx).apply {
+                                    isOpaque = true
+                                    isClickable = false
+                                    isFocusable = false
+                                }
+                            },
+                            update = { tv ->
+                                val exo = PlayerBridge.player
+                                if (exo != null) {
+                                    exo.setVideoTextureView(tv)
+                                }
+                            },
+                            onRelease = { tv ->
+                                runCatching {
+                                    PlayerBridge.player?.clearVideoTextureView(tv)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = coverAlpha }
+                                .clip(coverShape),
+                        )
+                    } else {
+                        AsyncImage(
+                            model = track.thumbnail,
+                            contentDescription = track.title,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = coverAlpha }
+                                .clip(coverShape),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                    }
                 }
-                if (showLyrics || lyricsAlpha > 0.01f) {
+                if (effectiveShowLyrics || lyricsAlpha > 0.01f) {
                     SyncedLyricsView(
                         lines = lyrics?.lines.orEmpty(),
                         synced = lyrics?.synced == true,
@@ -294,7 +387,7 @@ fun PlayerScreen(
             }
             Spacer(modifier = Modifier.height(artSpacer))
 
-            val canOpenAlbum = !track.albumId.isNullOrBlank()
+            val canOpenAlbum = !track.isVideo && !track.albumId.isNullOrBlank()
             AutoSizeSingleLineText(
                 text = track.title,
                 style = MaterialTheme.typography.titleLarge.copy(
@@ -317,10 +410,9 @@ fun PlayerScreen(
                         },
                     ),
             )
-            Text(
+            AutoSizeSingleLineText(
                 text = track.artist,
                 style = MaterialTheme.typography.bodyLarge.copy(
-
                     shadow = Shadow(
                         color = Color.Black.copy(alpha = 0.75f),
                         offset = Offset(0f, 1f),
@@ -328,29 +420,35 @@ fun PlayerScreen(
                     ),
                 ),
                 color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.clickable {
-
-                    val id = track.artistId
-                    if (!id.isNullOrBlank()) {
-                        onArtistClick(id)
-                    } else {
-                        scope.launch {
-                            try {
-                                val found = com.gammatunes.app.network.ApiClient.api
-                                    .searchArtists(track.artist)
-                                    .artists
-                                    .firstOrNull()
-                                if (found != null) {
-                                    onArtistClick(found.artistId)
+                maxFontSize = 16.sp,
+                minFontSize = 10.sp,
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .then(
+                        if (!track.isVideo) {
+                            Modifier.clickable {
+                                val id = track.artistId
+                                if (!id.isNullOrBlank()) {
+                                    onArtistClick(id)
+                                } else {
+                                    scope.launch {
+                                        try {
+                                            val found = com.gammatunes.app.network.ApiClient.api
+                                                .searchArtists(track.artist)
+                                                .artists
+                                                .firstOrNull()
+                                            if (found != null) {
+                                                onArtistClick(found.artistId)
+                                            }
+                                        } catch (_: Exception) {
+                                        }
+                                    }
                                 }
-                            } catch (_: Exception) {
                             }
-                        }
-                    }
-                },
+                        } else {
+                            Modifier
+                        },
+                    ),
             )
 
             Spacer(Modifier.height(16.dp))
@@ -407,6 +505,7 @@ fun PlayerScreen(
                         WaveSeekBar(
                             progress = sliderValue,
                             enabled = enabled,
+                            waveformKey = track.videoId,
                             onProgressChange = { v ->
                                 isSeeking = true
                                 seekFraction = v
@@ -423,6 +522,7 @@ fun PlayerScreen(
                         SquiggleSeekBar(
                             progress = sliderValue,
                             enabled = enabled,
+                            isPlaying = player.isPlaying,
                             onProgressChange = { v ->
                                 isSeeking = true
                                 seekFraction = v
@@ -514,17 +614,19 @@ fun PlayerScreen(
                 LiquidGlassSurface(shape = RoundedCornerShape(50)) {
                     DownloadButton(track = track, buttonSize = 48.dp, iconSize = 24.dp)
                 }
-                LiquidGlassSurface(shape = RoundedCornerShape(50)) {
-                    IconButton(onClick = { showLyrics = !showLyrics }) {
-                        Icon(
-                            imageVector = Icons.Default.Lyrics,
-                            contentDescription = strings.lyrics,
-                            tint = if (showLyrics) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                LocalContentColor.current
-                            },
-                        )
+                if (lyricsEnabled) {
+                    LiquidGlassSurface(shape = RoundedCornerShape(50)) {
+                        IconButton(onClick = { showLyrics = !showLyrics }) {
+                            Icon(
+                                imageVector = Icons.Default.Lyrics,
+                                contentDescription = strings.lyrics,
+                                tint = if (effectiveShowLyrics) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    LocalContentColor.current
+                                },
+                            )
+                        }
                     }
                 }
                 LiquidGlassSurface(shape = RoundedCornerShape(50)) {
@@ -595,16 +697,37 @@ fun PlayerScreen(
     }
 }
 
+/**
+ * Vivi-style wavy seek bar: continuously animated sine path with a simple
+ * circular thumb on the progress tip. Animation always runs (not only while playing).
+ */
 @Composable
 private fun SquiggleSeekBar(
     progress: Float,
     enabled: Boolean,
+    isPlaying: Boolean, // kept for API compatibility
     onProgressChange: (Float) -> Unit,
     onProgressChangeFinished: () -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
-    val trackColor = Color.White.copy(alpha = 0.28f)
+    val trackColor = Color.White.copy(alpha = 0.30f)
     var widthPx by remember { mutableStateOf(1f) }
+
+    // Phase advances only while playing; stays frozen when paused
+    var phase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(isPlaying) {
+        if (!isPlaying) return@LaunchedEffect
+        val twoPi = (2f * PI).toFloat()
+        var last = withFrameNanos { it }
+        while (true) {
+            val now = withFrameNanos { it }
+            val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, 0.05f)
+            last = now
+            // one full cycle every ~2.4s
+            phase = (phase + dt * twoPi / 2.4f) % twoPi
+        }
+    }
+
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -631,24 +754,23 @@ private fun SquiggleSeekBar(
         val w = size.width
         val h = size.height
         val midY = h / 2f
-
-        val amp = h * 0.32f
-        val wavelength = w / 5.5f
-        val stroke = 4.5.dp.toPx()
-        val progressX = (progress.coerceIn(0f, 1f) * w)
+        val amp = h * 0.30f
+        val wavelength = (w / 5f).coerceAtLeast(1f)
+        val strokeW = 4.dp.toPx()
+        val progressX = progress.coerceIn(0f, 1f) * w
 
         fun yAt(x: Float): Float {
-            val t = x / wavelength
-
+            val t = x / wavelength + phase
             return midY + amp * (
-                0.72f * kotlin.math.sin(t * 2f * Math.PI.toFloat()) +
-                    0.28f * kotlin.math.sin(t * 4f * Math.PI.toFloat() + 0.6f)
+                0.75f * sin(t) +
+                    0.25f * sin(t * 2f + 0.7f)
                 )
         }
 
-        fun buildPath(fromX: Float, toX: Float): androidx.compose.ui.graphics.Path {
-            val path = androidx.compose.ui.graphics.Path()
-            val steps = ((toX - fromX) / 3f).toInt().coerceAtLeast(2)
+        fun buildPath(fromX: Float, toX: Float): Path {
+            val path = Path()
+            if (toX <= fromX) return path
+            val steps = ((toX - fromX) / 2.5f).toInt().coerceAtLeast(2)
             path.moveTo(fromX, yAt(fromX))
             for (i in 1..steps) {
                 val x = fromX + (toX - fromX) * (i / steps.toFloat())
@@ -657,58 +779,62 @@ private fun SquiggleSeekBar(
             return path
         }
 
-
         drawPath(
             path = buildPath(0f, w),
             color = trackColor,
-            style = androidx.compose.ui.graphics.drawscope.Stroke(
-                width = stroke,
-                cap = StrokeCap.Round,
-                join = androidx.compose.ui.graphics.StrokeJoin.Round,
-            ),
+            style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round),
         )
 
-        if (progressX > 1f) {
+        if (progressX > 2f) {
             drawPath(
                 path = buildPath(0f, progressX),
                 color = primary,
-                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                    width = stroke,
-                    cap = StrokeCap.Round,
-                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
-                ),
+                style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round),
             )
         }
 
-        val ty = yAt(progressX)
+        val thumbX = progressX.coerceIn(0f, w)
+        val thumbY = yAt(thumbX)
         drawCircle(
-            color = primary.copy(alpha = 0.25f),
-            radius = 11.dp.toPx(),
-            center = Offset(progressX, ty),
+            color = primary.copy(alpha = 0.28f),
+            radius = 10.dp.toPx(),
+            center = Offset(thumbX, thumbY),
         )
         drawCircle(
             color = primary,
-            radius = 6.dp.toPx(),
-            center = Offset(progressX, ty),
+            radius = 5.5.dp.toPx(),
+            center = Offset(thumbX, thumbY),
         )
     }
 }
 
+/**
+ * Audio-waveform seek bar.
+ * Bars are derived from a deterministic spectrum seeded by [waveformKey] (track id),
+ * so each track gets a unique, stable waveform that looks like a real song envelope
+ * (louder mid sections, quieter edges, local peaks/valleys).
+ */
 @Composable
 private fun WaveSeekBar(
     progress: Float,
     enabled: Boolean,
+    waveformKey: String,
     onProgressChange: (Float) -> Unit,
     onProgressChangeFinished: () -> Unit,
 ) {
     val primary = MaterialTheme.colorScheme.primary
-    val track = Color.White.copy(alpha = 0.25f)
+    val track = Color.White.copy(alpha = 0.22f)
     var widthPx by remember { mutableStateOf(1f) }
+
+    val bars = 64
+    val amplitudes = remember(waveformKey) {
+        buildTrackWaveform(waveformKey, bars)
+    }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
+            .height(40.dp)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
             .pointerInput(enabled, widthPx) {
                 if (!enabled) return@pointerInput
@@ -728,23 +854,58 @@ private fun WaveSeekBar(
                 )
             },
     ) {
-        val bars = 32
-        val barWidth = size.width / (bars * 1.8f)
-        val gap = barWidth * 0.8f
+        val totalGap = size.width * 0.18f
+        val barWidth = (size.width - totalGap) / bars
+        val gap = totalGap / (bars + 1)
+        val minH = size.height * 0.12f
+        val maxH = size.height * 0.92f
+
         for (i in 0 until bars) {
-            val x = i * (barWidth + gap) + gap
-            val mid = bars / 2f
-            val amp = 0.35f + 0.65f * (1f - kotlin.math.abs(i - mid) / mid)
-            val h = size.height * amp * (0.55f + 0.45f * kotlin.math.sin(i * 0.9f).toFloat().let { (it + 1f) / 2f })
-            val active = i / bars.toFloat() <= progress
+            val x = gap + i * (barWidth + gap)
+            val amp = amplitudes[i]
+            val h = minH + (maxH - minH) * amp
+            val active = (i + 0.5f) / bars <= progress
             drawRoundRect(
                 color = if (active) primary else track,
                 topLeft = Offset(x, (size.height - h) / 2f),
-                size = androidx.compose.ui.geometry.Size(barWidth, h),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f, barWidth / 2f),
+                size = Size(barWidth, h),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
             )
         }
     }
+}
+
+/**
+ * Builds a stable, song-like amplitude envelope from a string seed (e.g. videoId).
+ * Combines a slow envelope, mid-frequency structure and high-frequency texture
+ * so the result resembles a real waveform rather than pure noise or a sine.
+ */
+private fun buildTrackWaveform(seed: String, count: Int): FloatArray {
+    var state = seed.fold(0x811C9DC5.toInt()) { acc, c ->
+        (acc xor c.code) * 0x01000193
+    }
+    fun next(): Float {
+        state = state * 1103515245 + 12345
+        return ((state ushr 16) and 0x7FFF) / 32767f
+    }
+    val out = FloatArray(count)
+    val denom = (count - 1).coerceAtLeast(1).toFloat()
+    for (i in 0 until count) {
+        val t = i / denom
+        val envelope = sin(t * PI.toFloat()).coerceIn(0.15f, 1f)
+        val phrase = 0.55f + 0.45f * sin(t * PI.toFloat() * 8f + next() * 2f)
+        val transient = 0.35f + 0.65f * next()
+        val soft = if (next() < 0.12f) 0.25f else 1f
+        out[i] = (envelope * phrase * transient * soft).coerceIn(0.08f, 1f)
+    }
+    val smoothed = FloatArray(count)
+    for (i in 0 until count) {
+        val a = out[(i - 1).coerceAtLeast(0)]
+        val b = out[i]
+        val c = out[(i + 1).coerceAtMost(count - 1)]
+        smoothed[i] = a * 0.2f + b * 0.6f + c * 0.2f
+    }
+    return smoothed
 }
 
 private fun formatTime(ms: Long): String {
@@ -764,30 +925,53 @@ fun AutoSizeSingleLineText(
     minFontSize: TextUnit,
     modifier: Modifier = Modifier,
 ) {
-    var fontSize by remember(text, maxFontSize) { mutableStateOf(maxFontSize) }
+    // Measure once against real maxWidth — no multi-frame shrink loop,
+    // so it fits immediately (not only after lyrics toggle / tab change).
+    BoxWithConstraints(modifier = modifier) {
+        val textMeasurer = rememberTextMeasurer()
+        val maxWidthPx = constraints.maxWidth
 
-
-    LaunchedEffect(text) {
-        fontSize = maxFontSize
-    }
-
-    Text(
-        text = text,
-        color = color,
-        style = style,
-        fontSize = fontSize,
-        maxLines = 1,
-        softWrap = false,
-        overflow = TextOverflow.Clip,
-        textAlign = TextAlign.Center,
-        modifier = modifier,
-        onTextLayout = { result ->
-            if (result.hasVisualOverflow && fontSize.value > minFontSize.value + 0.4f) {
-                val next = (fontSize.value - 1f).coerceAtLeast(minFontSize.value)
-                fontSize = next.sp
+        val fittedSize = remember(text, style, maxFontSize, minFontSize, maxWidthPx) {
+            if (maxWidthPx == Constraints.Infinity || maxWidthPx <= 0) {
+                maxFontSize
+            } else {
+                var lo = minFontSize.value
+                var hi = maxFontSize.value
+                var best = minFontSize.value
+                // Binary search font size that fits in one layout pass
+                repeat(12) {
+                    if (hi - lo < 0.25f) return@repeat
+                    val mid = (lo + hi) / 2f
+                    val layout = textMeasurer.measure(
+                        text = AnnotatedString(text),
+                        style = style.copy(fontSize = mid.sp),
+                        overflow = TextOverflow.Clip,
+                        softWrap = false,
+                        maxLines = 1,
+                        constraints = Constraints(maxWidth = maxWidthPx),
+                    )
+                    if (layout.didOverflowWidth || layout.size.width > maxWidthPx) {
+                        hi = mid
+                    } else {
+                        best = mid
+                        lo = mid
+                    }
+                }
+                best.sp
             }
-        },
-    )
+        }
+
+        Text(
+            text = text,
+            color = color,
+            style = style.copy(fontSize = fittedSize),
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 @Composable

@@ -64,8 +64,26 @@ class StreamResponse(BaseModel):
     streamUrl: str
     mimeType: str
     bitrate: int
+    quality: str = "high"
 
     httpHeaders: dict[str, str] = {}
+
+# Quality presets, mirrored on the Kotlin side (PlaybackSettingsRepository).
+_QUALITY_FORMATS: dict[str, str] = {
+    "high": "bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best",
+    "medium": (
+        "bestaudio[protocol^=http][protocol!=m3u8_native][abr<=128]/"
+        "bestaudio[abr<=128]/bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best"
+    ),
+    "low": (
+        "bestaudio[protocol^=http][protocol!=m3u8_native][abr<=64]/"
+        "bestaudio[abr<=64]/worstaudio[protocol^=http][protocol!=m3u8_native]/worstaudio/bestaudio/best"
+    ),
+}
+
+def _normalize_quality(quality: str | None) -> str:
+    q = (quality or "high").strip().lower()
+    return q if q in _QUALITY_FORMATS else "high"
 
 _THUMBNAIL_SIZE = 544
 _THUMBNAIL_SIZE_RE = re.compile(r"=w\d+-h\d+")
@@ -224,15 +242,17 @@ def _stream_expiry(stream_url: str) -> float:
 
     return time.time() + 3600
 
-def _extract_stream(video_id: str) -> StreamResponse:
-    cached = _stream_cache.get(video_id)
+def _extract_stream(video_id: str, quality: str | None = None) -> StreamResponse:
+    quality = _normalize_quality(quality)
+    cache_key = f"{video_id}:{quality}"
+    cached = _stream_cache.get(cache_key)
     if cached is not None:
         expires_at, cached_result = cached
         if time.time() < expires_at:
             return cached_result
 
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": _QUALITY_FORMATS[quality],
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -259,15 +279,16 @@ def _extract_stream(video_id: str) -> StreamResponse:
         streamUrl=stream_url,
         mimeType=fmt.get("ext", "m4a"),
         bitrate=int(fmt.get("abr") or 0),
+        quality=quality,
         httpHeaders=http_headers,
     )
-    _stream_cache[video_id] = (_stream_expiry(stream_url), result)
+    _stream_cache[cache_key] = (_stream_expiry(stream_url), result)
     return result
 
 @app.get("/stream/{video_id}", response_model=StreamResponse)
-def stream(video_id: str) -> StreamResponse:
+def stream(video_id: str, quality: str | None = Query(default=None)) -> StreamResponse:
     try:
-        return _extract_stream(video_id)
+        return _extract_stream(video_id, quality)
     except HTTPException:
         raise
     except Exception as exc:

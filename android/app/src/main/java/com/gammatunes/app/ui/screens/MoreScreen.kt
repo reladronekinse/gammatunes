@@ -10,28 +10,40 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.gammatunes.app.auth.AuthRepository
 import com.gammatunes.app.offline.OfflineRepository
+import com.gammatunes.app.player.AudioQuality
+import com.gammatunes.app.player.PlaybackSettingsRepository
 import com.gammatunes.app.ui.components.LiquidGlassSurface
 import com.gammatunes.app.ui.i18n.LocalStrings
 import com.gammatunes.app.ui.i18n.LocaleRepository
 import com.gammatunes.app.ui.i18n.AppLanguage
+import com.gammatunes.app.update.AppUpdateRepository
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun MoreScreen(
     onOpenAccount: () -> Unit,
     onOpenAppearance: () -> Unit,
+    onOpenPlayback: () -> Unit,
+    onOpenUpdates: () -> Unit,
     onOpenOfflineTracks: () -> Unit,
     onOpenOfflineAlbums: () -> Unit,
+    onOpenTopTracks: () -> Unit,
+    onOpenTopArtists: () -> Unit,
 ) {
     val strings = LocalStrings.current
     val context = LocalContext.current
@@ -39,6 +51,8 @@ fun MoreScreen(
     val isLoggedIn by AuthRepository.isLoggedIn.collectAsState()
     val offlineIndex by OfflineRepository.index.collectAsState()
     val offlineAlbums by OfflineRepository.albums.collectAsState()
+    val playbackSettings by PlaybackSettingsRepository.settings.collectAsState()
+    val updateState by AppUpdateRepository.state.collectAsState()
 
     LazyColumn(
         modifier = Modifier
@@ -69,13 +83,13 @@ fun MoreScreen(
 
 
         item {
-            SectionTitle(strings.offlineSection)
+            SectionTitle(strings.cachedSectionTitle)
         }
         item {
             MoreNavRow(
                 icon = Icons.Default.OfflinePin,
-                title = strings.offlineTracksTitle,
-                subtitle = strings.offlineTracksSection.format(offlineIndex.size),
+                title = strings.cachedTracksTitle,
+                subtitle = strings.cachedTracksSubtitle.format(offlineIndex.size),
                 onClick = onOpenOfflineTracks,
             )
         }
@@ -85,6 +99,27 @@ fun MoreScreen(
                 title = strings.offlineAlbumsTitle,
                 subtitle = strings.offlineAlbumsSection.format(offlineAlbums.size),
                 onClick = onOpenOfflineAlbums,
+            )
+        }
+
+
+        item {
+            SectionTitle(strings.topsSectionTitle)
+        }
+        item {
+            MoreNavRow(
+                icon = Icons.Default.Whatshot,
+                title = strings.topTracksTitle,
+                subtitle = strings.topTracksSubtitle,
+                onClick = onOpenTopTracks,
+            )
+        }
+        item {
+            MoreNavRow(
+                icon = Icons.Default.Star,
+                title = strings.topArtistsTitle,
+                subtitle = strings.topArtistsSubtitle,
+                onClick = onOpenTopArtists,
             )
         }
 
@@ -100,8 +135,39 @@ fun MoreScreen(
                 onClick = onOpenAppearance,
             )
         }
+        item {
+            MoreNavRow(
+                icon = Icons.Default.Tune,
+                title = strings.qualitySection,
+                subtitle = when (playbackSettings.quality) {
+                    AudioQuality.HIGH -> strings.qualityHigh
+                    AudioQuality.MEDIUM -> strings.qualityMedium
+                    AudioQuality.LOW -> strings.qualityLow
+                },
+                onClick = onOpenPlayback,
+            )
+        }
 
+        item {
+            SectionTitle(strings.updatesSection)
+        }
+        item {
+            MoreNavRow(
+                icon = Icons.Default.SystemUpdate,
+                title = strings.updatesSection,
+                subtitle = when (val s = updateState) {
+                    is AppUpdateRepository.UpdateState.Available ->
+                        strings.updateAvailable.format(s.release.tag_name)
+                    is AppUpdateRepository.UpdateState.Downloading ->
+                        strings.downloading.format(s.progressPercent)
+                    is AppUpdateRepository.UpdateState.UpToDate -> strings.upToDate
+                    else -> strings.updatesSubtitle
+                },
+                onClick = onOpenUpdates,
+            )
+        }
 
+        // Language and About are always pinned to the bottom of the list
         item {
             SectionTitle(strings.languageSection)
         }
@@ -134,7 +200,6 @@ fun MoreScreen(
             }
         }
 
-
         item {
             SectionTitle(strings.aboutSection)
         }
@@ -149,8 +214,13 @@ fun MoreScreen(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+                    val versionName = remember {
+                        runCatching {
+                            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                        }.getOrNull() ?: "0.4-unstable"
+                    }
                     Text(
-                        text = strings.versionLabel.format("0.3-stable"),
+                        text = strings.versionLabel.format(versionName),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

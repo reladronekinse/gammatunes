@@ -11,6 +11,8 @@ data class Track(
     val durationSeconds: Int? = null,
 
     val artistId: String? = null,
+    /** True for YouTube videos (not music catalogue songs). Player shows video surface. */
+    val isVideo: Boolean = false,
 )
 
 data class Album(
@@ -50,13 +52,9 @@ data class StreamResponse(
     val streamUrl: String,
     val mimeType: String,
     val bitrate: Int,
-
-
-
-
-
-
+    val quality: String = "high",
     val httpHeaders: Map<String, String> = emptyMap(),
+    val isVideoStream: Boolean = false,
 )
 
 data class AuthStatusResponse(

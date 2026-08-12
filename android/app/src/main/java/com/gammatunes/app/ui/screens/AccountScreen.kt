@@ -237,7 +237,10 @@ fun AccountScreen(
                                                 scope.launch {
                                                     try {
                                                         val detail =
-                                                            ApiClient.api.playlistTracks(pl.playlistId)
+                                                            ApiClient.api.playlistTracks(
+                                                                pl.playlistId,
+                                                                limit = 5000,
+                                                            )
                                                         expandedPlaylistTracks = detail.tracks
                                                     } catch (_: Throwable) {
                                                         expandedPlaylistTracks = emptyList()

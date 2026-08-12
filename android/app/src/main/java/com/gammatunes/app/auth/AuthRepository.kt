@@ -153,7 +153,7 @@ object AuthRepository {
         }
     }
 
-    suspend fun refreshLiked(limit: Int = 100) = withContext(Dispatchers.IO) {
+    suspend fun refreshLiked(limit: Int = 5000) = withContext(Dispatchers.IO) {
         if (!_isLoggedIn.value) return@withContext
         _isBusy.value = true
         _statusMessage.value = null
@@ -171,7 +171,7 @@ object AuthRepository {
         }
     }
 
-    suspend fun refreshPlaylists(limit: Int = 50) = withContext(Dispatchers.IO) {
+    suspend fun refreshPlaylists(limit: Int = 100) = withContext(Dispatchers.IO) {
         if (!_isLoggedIn.value) return@withContext
         _isBusy.value = true
         try {
@@ -186,7 +186,7 @@ object AuthRepository {
         }
     }
 
-    suspend fun loadPlaylistTracks(playlistId: String, limit: Int = 100): List<Track> =
+    suspend fun loadPlaylistTracks(playlistId: String, limit: Int = 5000): List<Track> =
         withContext(Dispatchers.IO) {
             try {
                 ApiClient.api.playlistTracks(playlistId, limit).tracks

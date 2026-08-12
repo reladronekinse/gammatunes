@@ -341,7 +341,31 @@ def _pick_thumbnail(thumbnails):
         return None
     return _upscale_thumbnail(thumbnails[-1].get("url"))
 
-def _to_track(item: dict) -> dict | None:
+def _parse_duration_seconds(item: dict) -> int | None:
+    if item.get("duration_seconds") is not None:
+        try:
+            return int(item["duration_seconds"])
+        except (TypeError, ValueError):
+            pass
+    dur = item.get("duration")
+    if isinstance(dur, (int, float)):
+        return int(dur)
+    if isinstance(dur, str) and dur.strip():
+        parts = dur.strip().split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return None
+        if len(nums) == 3:
+            return nums[0] * 3600 + nums[1] * 60 + nums[2]
+        if len(nums) == 2:
+            return nums[0] * 60 + nums[1]
+        if len(nums) == 1:
+            return nums[0]
+    return None
+
+
+def _to_track(item: dict, is_video: bool | None = None) -> dict | None:
     video_id = item.get("videoId")
     if not video_id:
         return None
@@ -356,6 +380,9 @@ def _to_track(item: dict) -> dict | None:
     if isinstance(album, dict):
         album_name = album.get("name")
         album_id = album.get("id") or album.get("browseId")
+    result_type = (item.get("resultType") or item.get("category") or "").lower()
+    if is_video is None:
+        is_video = result_type in ("video", "videos")
     return {
         "videoId": video_id,
         "title": item.get("title", "Unknown"),
@@ -363,8 +390,9 @@ def _to_track(item: dict) -> dict | None:
         "album": album_name,
         "albumId": album_id,
         "thumbnail": _pick_thumbnail(item.get("thumbnails")),
-        "durationSeconds": item.get("duration_seconds"),
+        "durationSeconds": _parse_duration_seconds(item),
         "artistId": artist_id,
+        "isVideo": bool(is_video),
     }
 
 def _to_album(item: dict) -> dict | None:
@@ -471,6 +499,26 @@ _STREAM_CACHE_SAFETY_SECONDS = 300
 _stream_cache: dict[str, tuple[float, dict]] = {}
 _stream_cache_lock = threading.Lock()
 
+# Quality presets, mirrored on the Kotlin side (PlaybackSettingsRepository).
+# "high"   -> best available audio, no bitrate cap
+# "medium" -> capped around ~128kbps to save some bandwidth
+# "low"    -> capped around ~64kbps, aggressive data saver
+_QUALITY_FORMATS: dict[str, str] = {
+    "high": "bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best",
+    "medium": (
+        "bestaudio[protocol^=http][protocol!=m3u8_native][abr<=128]/"
+        "bestaudio[abr<=128]/bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best"
+    ),
+    "low": (
+        "bestaudio[protocol^=http][protocol!=m3u8_native][abr<=64]/"
+        "bestaudio[abr<=64]/worstaudio[protocol^=http][protocol!=m3u8_native]/worstaudio/bestaudio/best"
+    ),
+}
+
+def _normalize_quality(quality: str | None) -> str:
+    q = (quality or "high").strip().lower()
+    return q if q in _QUALITY_FORMATS else "high"
+
 def _stream_expiry(stream_url: str) -> float:
     try:
         expire = parse_qs(urlparse(stream_url).query).get("expire", [None])[0]
@@ -480,23 +528,39 @@ def _stream_expiry(stream_url: str) -> float:
         pass
     return time.time() + 3600
 
-def _extract_stream(video_id: str) -> dict:
+_VIDEO_FORMAT = (
+    "best[height<=720][protocol^=http][protocol!=m3u8_native][vcodec!=none][acodec!=none]/"
+    "best[height<=720][vcodec!=none][acodec!=none]/"
+    "best[vcodec!=none][acodec!=none]/"
+    "best[height<=720]/"
+    "best"
+)
+
+
+def _extract_stream(video_id: str, quality: str | None = None, want_video: bool = False) -> dict:
+    quality = _normalize_quality(quality)
+    cache_key = f"{video_id}:{'video' if want_video else quality}"
     with _stream_cache_lock:
-        cached = _stream_cache.get(video_id)
+        cached = _stream_cache.get(cache_key)
         if cached is not None:
             expires_at, cached_result = cached
             if time.time() < expires_at:
                 return cached_result
 
+    fmt_selector = _VIDEO_FORMAT if want_video else _QUALITY_FORMATS[quality]
     ydl_opts = {
-
-        "format": "bestaudio[protocol^=http][protocol!=m3u8_native]/bestaudio/best",
+        "format": fmt_selector,
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
-    url = f"https://music.youtube.com/watch?v={video_id}"
+    # Videos work better from youtube.com; music songs from music.youtube.com
+    url = (
+        f"https://www.youtube.com/watch?v={video_id}"
+        if want_video
+        else f"https://music.youtube.com/watch?v={video_id}"
+    )
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -505,10 +569,29 @@ def _extract_stream(video_id: str) -> dict:
         fmt = info
     else:
         formats = info.get("formats", [])
-        audio_formats = [f for f in formats if f.get("acodec") != "none"]
-        if not audio_formats:
-            raise ValueError("No audio stream found")
-        fmt = max(audio_formats, key=lambda f: f.get("abr") or 0)
+        if want_video:
+            candidates = [
+                f for f in formats
+                if f.get("vcodec") not in (None, "none")
+                and f.get("acodec") not in (None, "none")
+                and f.get("url")
+            ]
+            if not candidates:
+                candidates = [f for f in formats if f.get("vcodec") not in (None, "none") and f.get("url")]
+            if not candidates:
+                raise ValueError("No video stream found")
+            fmt = max(
+                candidates,
+                key=lambda f: (
+                    (f.get("height") or 0),
+                    (f.get("tbr") or f.get("abr") or 0),
+                ),
+            )
+        else:
+            audio_formats = [f for f in formats if f.get("acodec") != "none"]
+            if not audio_formats:
+                raise ValueError("No audio stream found")
+            fmt = max(audio_formats, key=lambda f: f.get("abr") or 0)
         stream_url = fmt["url"]
 
     http_headers = dict(fmt.get("http_headers") or info.get("http_headers") or {})
@@ -516,12 +599,14 @@ def _extract_stream(video_id: str) -> dict:
     result = {
         "videoId": video_id,
         "streamUrl": stream_url,
-        "mimeType": fmt.get("ext", "m4a"),
-        "bitrate": int(fmt.get("abr") or 0),
+        "mimeType": fmt.get("ext", "mp4" if want_video else "m4a"),
+        "bitrate": int(fmt.get("tbr") or fmt.get("abr") or 0),
+        "quality": "video" if want_video else quality,
         "httpHeaders": http_headers,
+        "isVideoStream": bool(want_video),
     }
     with _stream_cache_lock:
-        _stream_cache[video_id] = (_stream_expiry(stream_url), result)
+        _stream_cache[cache_key] = (_stream_expiry(stream_url), result)
     return result
 
 def _download_audio_file(video_id: str) -> tuple[str, str, str]:
@@ -754,11 +839,27 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 limit = int((qs.get("limit") or ["25"])[0])
                 try:
-                    raw = _get_yt().search(q, filter="songs", limit=limit)
+                    yt = _get_yt()
+                    raw_songs = yt.search(q, filter="songs", limit=limit)
+                    try:
+                        raw_videos = yt.search(q, filter="videos", limit=limit)
+                    except Exception:
+                        raw_videos = []
                 except Exception as exc:
                     self._send_error_json(502, f"YTMusic search failed: {exc}")
                     return
-                tracks = [t for t in (_to_track(i) for i in raw) if t]
+                tracks = []
+                seen = set()
+                for i in raw_songs:
+                    tr = _to_track(i, is_video=False)
+                    if tr and tr["videoId"] not in seen:
+                        seen.add(tr["videoId"])
+                        tracks.append(tr)
+                for i in raw_videos:
+                    tr = _to_track(i, is_video=True)
+                    if tr and tr["videoId"] not in seen:
+                        seen.add(tr["videoId"])
+                        tracks.append(tr)
                 self._send_json(200, {"results": tracks})
                 return
 
@@ -767,8 +868,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if not video_id:
                     self._send_error_json(400, "videoId is required")
                     return
+                quality = (qs.get("quality") or [None])[0]
+                want_video = (qs.get("video") or ["0"])[0].lower() in ("1", "true", "yes")
                 try:
-                    result = _extract_stream(video_id)
+                    result = _extract_stream(video_id, quality, want_video=want_video)
                 except Exception as exc:
                     self._send_error_json(502, f"Stream extraction failed: {exc}")
                     return
@@ -893,7 +996,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if _auth_json is None and not _auth_file_path:
                     self._send_error_json(401, "Not authenticated")
                     return
-                limit = int((qs.get("limit") or ["100"])[0])
+                try:
+                    limit = max(1, min(10000, int((qs.get("limit") or ["5000"])[0])))
+                except Exception:
+                    limit = 5000
                 try:
                     liked = _get_yt().get_liked_songs(limit=limit)
                 except Exception as exc:
@@ -923,10 +1029,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if _auth_json is None and not _auth_file_path:
                     self._send_error_json(401, "Not authenticated")
                     return
-                limit = 50
+                limit = 100
                 try:
                     if "limit" in qs:
-                        limit = max(1, min(100, int(qs["limit"][0])))
+                        limit = max(1, min(500, int(qs["limit"][0])))
                 except Exception:
                     pass
                 try:
@@ -948,12 +1054,17 @@ class _Handler(BaseHTTPRequestHandler):
                 if not playlist_id or playlist_id == "add":
                     self._send_error_json(400, "playlistId required")
                     return
-                limit = 100
+                limit = None
                 try:
                     if "limit" in qs:
-                        limit = max(1, min(500, int(qs["limit"][0])))
+                        raw_limit = int(qs["limit"][0])
+                        # 0 or very large → fetch all tracks
+                        if raw_limit <= 0 or raw_limit >= 10000:
+                            limit = None
+                        else:
+                            limit = max(1, min(10000, raw_limit))
                 except Exception:
-                    pass
+                    limit = None
                 try:
                     data = _get_yt().get_playlist(playlist_id, limit=limit)
                 except Exception as exc:
@@ -995,11 +1106,11 @@ class _Handler(BaseHTTPRequestHandler):
                 if _auth_json is None and not _auth_file_path:
                     self._send_error_json(401, "Not authenticated")
                     return
-                limit = 50
+                limit = 100
                 try:
                     qs = parse_qs(urlparse(self.path).query)
                     if "limit" in qs:
-                        limit = max(1, min(100, int(qs["limit"][0])))
+                        limit = max(1, min(500, int(qs["limit"][0])))
                 except Exception:
                     pass
                 try:
@@ -1021,13 +1132,17 @@ class _Handler(BaseHTTPRequestHandler):
                 if not playlist_id:
                     self._send_error_json(400, "playlistId required")
                     return
-                limit = 100
+                limit = None
                 try:
                     qs = parse_qs(urlparse(self.path).query)
                     if "limit" in qs:
-                        limit = max(1, min(500, int(qs["limit"][0])))
+                        raw_limit = int(qs["limit"][0])
+                        if raw_limit <= 0 or raw_limit >= 10000:
+                            limit = None
+                        else:
+                            limit = max(1, min(10000, raw_limit))
                 except Exception:
-                    pass
+                    limit = None
                 try:
                     data = _get_yt().get_playlist(playlist_id, limit=limit)
                 except Exception as exc:
